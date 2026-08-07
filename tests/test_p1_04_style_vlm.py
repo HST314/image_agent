@@ -31,6 +31,9 @@ def _payload(style_index: str) -> dict[str, object]:
         "title": "结构化视觉方向",
         "composition": "使用非对称信息层级",
         "material": "哑光纸张与柔和侧光",
+        "lighting": f"{style_index} 柔和侧光",
+        "narrative": f"{style_index} 由主视觉到信息层",
+        "graphic_language": f"{style_index} 几何图形语言",
         "fit_reason": "适合新品信息分层",
         "artistic_philosophy": "以秩序服务信息表达",
         "adaptable_mechanism": "借鉴节奏、留白与材质关系",
@@ -83,7 +86,7 @@ def test_five_controlled_images_are_interpreted_once_and_bound_to_style_index():
         assert all(
             getattr(idea, field)
             for field in (
-                "title", "composition", "material", "fit_reason", "artistic_philosophy",
+                "title", "composition", "material", "lighting", "narrative", "graphic_language", "fit_reason", "artistic_philosophy",
                 "adaptable_mechanism", "major_risk", "prompt_supplement",
             )
         )
@@ -188,15 +191,15 @@ def test_runner_makes_five_vlm_calls_then_five_text_only_image_calls(tmp_path: P
     runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
     runner.offline_mode = False
     vlm_calls: list[tuple[str, str]] = []
-    image_calls: list[tuple[str, list[str], int | None]] = []
+    image_calls: list[tuple[str, list[str], int | None, str | None]] = []
 
     def vlm(image_uri: str, prompt: str) -> dict[str, object]:
         vlm_calls.append((image_uri, prompt))
         style_index = json.loads(prompt.split("绑定身份：", 1)[1].splitlines()[0])["style_index"]
         return _payload(style_index)
 
-    def image(_state: str, prompt: str, references: list[str], *, index: int | None = None):
-        image_calls.append((prompt, references, index))
+    def image(_state: str, prompt: str, references: list[str], *, index: int | None = None, idempotency_key: str | None = None):
+        image_calls.append((prompt, references, index, idempotency_key))
         return {"uri": f"mock://candidate/{index}", "sha256": str(index), "mock": True}
 
     runner._style_vlm_call = vlm
@@ -206,9 +209,11 @@ def test_runner_makes_five_vlm_calls_then_five_text_only_image_calls(tmp_path: P
     )
 
     assert len(vlm_calls) == len(image_calls) == len(result["candidates"]) == 5
-    assert all(references == [] for _, references, _ in image_calls)
-    assert {index for _, _, index in image_calls} == set(range(5))
-    hard_blocks = [prompt.split("【内容/品牌/空间/合规硬约束（不得改写）】\n", 1)[1].split("\n【品类硬约束】", 1)[0] for prompt, _, _ in image_calls]
+    assert all(references == [] for _, references, _, _ in image_calls)
+    assert {index for _, _, index, _ in image_calls} == set(range(5))
+    assert len({key for _, _, _, key in image_calls}) == 5
+    assert all(key and len(key) == 64 for _, _, _, key in image_calls)
+    hard_blocks = [prompt.split("【内容/品牌/空间/合规硬约束（不得改写）】\n", 1)[1].split("\n【品类硬约束】", 1)[0] for prompt, _, _, _ in image_calls]
     assert len(set(hard_blocks)) == 1
     serialized_calls = json.dumps(image_calls, ensure_ascii=False)
     assert "data:image/" not in serialized_calls and "references/" not in serialized_calls

@@ -92,6 +92,9 @@ class StyleIdeaGenerator:
             title=payload["title"],
             composition=payload["composition"],
             material=payload["material"],
+            lighting=payload["lighting"],
+            narrative=payload["narrative"],
+            graphic_language=payload["graphic_language"],
             fit_reason=payload["fit_reason"],
             artistic_philosophy=payload["artistic_philosophy"],
             adaptable_mechanism=payload["adaptable_mechanism"],
@@ -120,6 +123,9 @@ class StyleIdeaGenerator:
             title=style_card.style_name or style_card.style_id,
             composition=style_card.composition,
             material=material,
+            lighting=style_card.visual_language.lighting or "均匀柔和照明",
+            narrative=f"以{style_card.composition}组织从主信息到辅助信息的阅读叙事。",
+            graphic_language=style_card.visual_language.scheme or material,
             fit_reason=f"{style_card.summary}；适用于任务目标与使用场景；目录标注适用范围为：{'、'.join(style_card.best_for)}。",
             artistic_philosophy=f"以“{style_card.style_name}”建立信息秩序，在表达效率与视觉辨识度之间保持平衡。",
             adaptable_mechanism=f"借鉴{style_card.composition}，以及{material}；不复制参考图的具体主体或独特表达。",
@@ -146,6 +152,7 @@ class StyleIdeaGenerator:
             "请阅读且仅分析这张受控风格参考图，为通用图片生成流程输出一个中文风格理念卡。"
             "不得加入任务卡和确认书以外的具体业务事实。只返回 JSON："
             '{"style_index":"string","style_summary":"string","title":"string","composition":"string","material":"string",'
+            '"lighting":"string","narrative":"string","graphic_language":"string",'
             '"fit_reason":"string","artistic_philosophy":"string","adaptable_mechanism":"string",'
             '"prohibited_copy_elements":["string"],"major_risk":"string","prompt_supplement":"string"}\n'
             f"绑定身份：{json.dumps({'style_id': style_card.style_id, 'style_index': style_card.style_index}, ensure_ascii=False)}\n"

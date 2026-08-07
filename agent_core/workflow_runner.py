@@ -42,6 +42,9 @@ def build_style_candidate_prompt(
         "style_summary": idea.style_summary,
         "composition": idea.composition,
         "material": idea.material,
+        "lighting": idea.lighting,
+        "narrative": idea.narrative,
+        "graphic_language": idea.graphic_language,
         "artistic_philosophy": idea.artistic_philosophy,
         "adaptable_mechanism": idea.adaptable_mechanism,
         "task_fit": idea.fit_reason,
@@ -57,6 +60,24 @@ def build_style_candidate_prompt(
         "只借鉴抽象视觉语言；不得复制参考图的主体、构图、文字、标识或任何独特表达。"
         "不得推断、请求或传递参考图字节、文件路径或 URI。"
     )
+
+
+def validate_candidate_mechanisms(ideas: list[StyleIdeaCard], *, expected_count: int = 5) -> None:
+    """Reject incomplete or falsely duplicated five-direction batches before rendering."""
+
+    if len(ideas) != expected_count:
+        raise ValueError(f"候选机制必须恰好为 {expected_count} 种。")
+    if len({idea.style_index for idea in ideas}) != expected_count:
+        raise ValueError("候选 style_index 不唯一，禁止假装完成五种机制。")
+    fields = ("composition", "material", "lighting", "narrative", "graphic_language")
+    signatures: set[tuple[str, ...]] = set()
+    for idea in ideas:
+        signature = tuple(" ".join(str(getattr(idea, field)).split()).casefold() for field in fields)
+        if any(not value for value in signature):
+            raise ValueError(f"候选 {idea.style_index} 的机制说明不完整。")
+        if signature in signatures:
+            raise ValueError("候选的构图、材质、光影、叙事和图形语言机制重复，禁止生图。")
+        signatures.add(signature)
 
 
 def _task_hard_constraints(task_card: ImageTaskCard, spec: TaskSpecification) -> dict[str, Any]:
@@ -273,6 +294,7 @@ class WorkflowRunner:
         ).generate(
             task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=self.policy.candidate_count
         )
+        validate_candidate_mechanisms(idea_cards, expected_count=self.policy.candidate_count)
 
         # 3. 终端输出这 5 张文本卡片给用户
         self.output("\n=================== 🎨 筛选出 5 种艺术风格方向 ===================")
@@ -291,18 +313,22 @@ class WorkflowRunner:
         hard_constraints = _task_hard_constraints(task_card, spec)
         category_description = category_skill.prompt_injection.category_description if category_skill else ""
 
+        slot_identities = [idea.style_index for idea in idea_cards]
+
         def render(index: int) -> dict[str, Any]:
             idea = idea_cards[index] if index < len(idea_cards) else None
             if idea is None:
                 raise ValueError(f"候选槽位 {index} 缺少已绑定的 VLM 风格理解。")
             prompt = build_style_candidate_prompt(idea, hard_constraints, category_description)
             # Scheme B invariant: reference images are VLM-only and never image-provider inputs.
-            result = self._image_call("initial_candidate_generation", prompt, [], index=index)
+            slot_key = content_hash(["initial_candidate_generation", spec.content_hash, index, idea.style_index])
+            result = self._image_call("initial_candidate_generation", prompt, [], index=index, idempotency_key=slot_key)
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
 
         batch = CandidateBatchGenerator(self.store, render, attempts=self.policy.max_render_retries + 1,
                                         max_workers=self.policy.candidate_concurrency).generate(
-                                            spec.content_hash, count=self.policy.candidate_count)
+                                            spec.content_hash, count=self.policy.candidate_count,
+                                            slot_identities=slot_identities)
         if batch["failed"]: 
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
         return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards],
@@ -434,12 +460,13 @@ class WorkflowRunner:
             needs_images=1,
         )
 
-    def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None) -> dict[str, Any]:
+    def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None,
+                    idempotency_key: str | None = None) -> dict[str, Any]:
         if self.offline_mode:
             # Still cross the Gateway, so offline tests exercise routing/auditing.
             result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
                 lambda route: {"uri": f"mock://{state}/{index or 0}", "mock": True, "provider": "offline", "model": route.binding.model},
-                messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
+                messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references, "idempotency_key":idempotency_key},
                 template_id=state, template_version="2", input_refs=references, needs_images=len(references))
             return normalize_image_asset(result)
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
@@ -447,6 +474,6 @@ class WorkflowRunner:
                 model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
                 self.policy.default_output_size, {"state":state},
                 response_format=self.policy.response_format, watermark=self.policy.watermark, reference_images=references)),
-            messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
+            messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references, "idempotency_key":idempotency_key},
             template_id=state, template_version="2", input_refs=references, needs_images=len(references))
         return persist_image_asset(result, self.store.artifacts)
