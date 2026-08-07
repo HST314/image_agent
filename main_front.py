@@ -198,6 +198,9 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
             job["job_id"], completed=completed, total=total, unit=unit
         )
         runner.run(snapshot, _options(body))
+        from agent_core.error_taxonomy import JobCancelledError
+        if jobs.cancellation_requested(job["job_id"]):
+            raise JobCancelledError("作业在完成前收到取消请求。")
         if not jobs.cancellation_requested(job["job_id"]):
             current = jobs.get(job["job_id"])["progress"]
             jobs.heartbeat(job["job_id"], completed=current["total"], total=current["total"], unit=current["unit"])

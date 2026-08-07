@@ -190,6 +190,7 @@ class WorkflowRunner:
             return self._run_locked(snapshot, options, only_state=only_state)
 
     def _run_locked(self, snapshot: dict[str, Any] | None, options: RunnerOptions, *, only_state: str | None = None) -> dict[str, Any]:
+        from agent_core.error_taxonomy import JobCancelledError
         data = dict(snapshot or {}); target = only_state or self.next_state(snapshot)
         cursor = self.store.execution_cursor()
         # Normal resume is cursor-driven. `only_state` is the established retry
@@ -203,6 +204,8 @@ class WorkflowRunner:
                 raise ValueError("检查点执行游标与兼容 state 投影不一致，拒绝执行。")
             validate_product_successor(product_state, target)
         while True:
+            if self.should_cancel():
+                raise JobCancelledError("作业已请求取消。")
             current = str(data.get("state", ""))
             if current and current != target:
                 validate_transition(current, target)
@@ -210,9 +213,13 @@ class WorkflowRunner:
             self.store.start_step(target, input_hash=content_hash(data))
             try:
                 result = handler(data, options.__dict__)
+                if self.should_cancel():
+                    raise JobCancelledError("作业已请求取消，停止写入新的成功检查点。")
                 data = {**data, **result, "state": target}
                 # Waiting is a successful recoverable boundary, not a failed state.
                 self.store.checkpoint(target, data)
+            except JobCancelledError:
+                raise
             except Exception as exc:
                 from agent_core.error_taxonomy import error_record
                 self.store.fail_step(target, error_record(exc, stage=target,
@@ -362,7 +369,8 @@ class WorkflowRunner:
 
         def render(index: int) -> dict[str, Any]:
             if self.should_cancel():
-                raise RuntimeError("作业已请求取消，未开始的供应商调用已停止。")
+                from agent_core.error_taxonomy import JobCancelledError
+                raise JobCancelledError("作业已请求取消，未开始的供应商调用已停止。")
             idea = idea_cards[index] if index < len(idea_cards) else None
             if idea is None:
                 raise ValueError(f"候选槽位 {index} 缺少已绑定的 VLM 风格理解。")

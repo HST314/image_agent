@@ -9,6 +9,7 @@ from agent_core.jobs import JobStore
 from agent_core.batch import CandidateBatchGenerator
 from storage.project_store import ProjectStore
 import jsonschema
+import pytest
 
 
 def _claim_and_crash(project_root: str, job_id: str) -> None:
@@ -127,10 +128,10 @@ def test_running_cancel_stops_supplier_calls_that_have_not_started(tmp_path: Pat
         cancelled = True
         return {"uri": str(index), "sha256": str(index), "candidate_index": index}
 
-    result = CandidateBatchGenerator(
-        store, render, attempts=2, max_workers=1, should_cancel=lambda: cancelled
-    ).generate("confirmed-spec", count=5)
+    from agent_core.error_taxonomy import JobCancelledError
+    with pytest.raises(JobCancelledError):
+        CandidateBatchGenerator(
+            store, render, attempts=2, max_workers=1, should_cancel=lambda: cancelled
+        ).generate("confirmed-spec", count=5)
     assert calls == [0]
-    assert len(result["succeeded"]) == 1
-    assert [failure["index"] for failure in result["failed"]] == [1, 2, 3, 4]
-    assert all(failure["cancelled"] for failure in result["failed"])
+    assert not [event for event in store.history() if event["type"] == "candidate_failed"]

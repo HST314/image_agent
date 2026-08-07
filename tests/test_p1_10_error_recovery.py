@@ -7,8 +7,9 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from agent_core.batch import CandidateBatchGenerator
-from agent_core.error_taxonomy import error_record
+from agent_core.error_taxonomy import JobCancelledError, error_record
 from agent_core.jobs import JobStore
+from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from model_router.executor import ModelCallError, ModelExecutor
 from storage.project_store import ProjectStore
 
@@ -40,6 +41,67 @@ def test_stable_taxonomy(exc, code, retryable, action):
     assert (record["code"], record["retryable"], record["suggested_action"]) == (code, retryable, action)
     assert record["candidate_slot"] == 2 and record["rework_round"] == 3
     assert record["trace_id"] == "trace_" + "a" * 32
+
+
+def test_runner_cancellation_message_is_not_misclassified_as_internal_error():
+    record = error_record(RuntimeError("作业已请求取消，未开始的供应商调用已停止。"),
+                          stage="initial_candidate_generation")
+    assert record["code"] == "CANCELLED"
+    assert record["retryable"] is False
+    assert record["suggested_action"] == "none"
+
+
+def test_runner_cancel_before_handler_writes_no_failure_or_checkpoint(tmp_path: Path):
+    store = ProjectStore(tmp_path, "cancel-before-provider"); store.create()
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True,
+                            should_cancel=lambda: True)
+    called = []
+    runner.handlers["initial_candidate_generation"] = lambda *_: called.append(True) or {}
+
+    with pytest.raises(JobCancelledError):
+        runner.run({"state": "confirmation_build"}, RunnerOptions(),
+                   only_state="initial_candidate_generation")
+
+    assert called == []
+    assert store.manifest().get("failed_step") is None
+    assert not [event for event in store.history() if event["type"] in {"step_failed", "step_succeeded"}]
+
+
+def test_runner_cancel_after_handler_skips_success_and_error_checkpoints(tmp_path: Path):
+    store = ProjectStore(tmp_path, "cancel-before-checkpoint"); store.create()
+    cancelled = False
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True,
+                            should_cancel=lambda: cancelled)
+
+    def handler(*_):
+        nonlocal cancelled
+        cancelled = True
+        return {"phase": "candidate_generation_completed"}
+
+    runner.handlers["initial_candidate_generation"] = handler
+    with pytest.raises(JobCancelledError):
+        runner.run({"state": "confirmation_build"}, RunnerOptions(),
+                   only_state="initial_candidate_generation")
+
+    assert store.manifest().get("failed_step") is None
+    assert [event["type"] for event in store.history()].count("step_started") == 1
+    assert not [event for event in store.history() if event["type"] in {"step_failed", "step_succeeded"}]
+
+
+def test_cancel_wins_job_finish_and_refresh_has_neutral_action(tmp_path: Path):
+    store = ProjectStore(tmp_path, "cancel-job-finish"); store.create()
+    jobs = JobStore(store.root)
+    job, _ = jobs.create("cancel-finish-key", {"x": 1})
+    jobs.claim(job["job_id"])
+    jobs.cancel(job["job_id"])
+    finished = jobs.finish(job["job_id"], error=error_record(
+        JobCancelledError("作业在完成前收到取消请求。"), stage="workflow"))
+
+    assert finished["status"] == "cancelled"
+    assert finished.get("error") is None
+    refreshed = jobs.get(job["job_id"])
+    assert refreshed["status"] == "cancelled"
+    assert refreshed.get("error") is None
 
 
 def test_retry_after_and_exponential_policy_are_bounded():

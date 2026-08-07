@@ -133,10 +133,11 @@ class JobStore:
         def mutate(data: dict[str, Any]) -> dict[str, Any]:
             job = data["jobs"][job_id]
             status = "cancelled" if job.get("cancel_requested") else ("failed" if error else "succeeded")
+            final_error = None if status == "cancelled" else error
             if status == "succeeded":
                 progress = job.get("progress") or {"total": 1, "unit": "workflow"}
                 job["progress"] = {**progress, "completed": progress["total"]}
-            job.update(status=status, error=error, finished_at=_now(), updated_at=_now())
+            job.update(status=status, error=final_error, finished_at=_now(), updated_at=_now())
             return dict(job)
         return self._locked(mutate)
 

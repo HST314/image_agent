@@ -14,6 +14,10 @@ _SECRET = re.compile(
 _BEARER = re.compile(r"(?i)bearer\s+[a-z0-9._~+\-/=]+")
 
 
+class JobCancelledError(RuntimeError):
+    """Stable cooperative-cancellation signal across runner and batch boundaries."""
+
+
 def sanitize_detail(value: object, *, limit: int = 512) -> str:
     """Keep actionable context without credentials or full provider bodies."""
     text = _BEARER.sub("Bearer [REDACTED]", str(value))
@@ -34,7 +38,10 @@ def classify_exception(exc: BaseException) -> ClassifiedError:
     category = str(getattr(exc, "category", "")).lower()
     name = type(exc).__name__.lower()
     message = str(exc).lower()
-    if name in {"cancellederror", "jobcancellederror"} or "cancel_requested" in message:
+    if (isinstance(exc, JobCancelledError)
+            or name in {"cancellederror", "jobcancellederror"}
+            or "cancel_requested" in message
+            or "作业已请求取消" in message):
         return ClassifiedError("CANCELLED", False, "none", 409)
     if status == 429 or category == "rate_limited":
         return ClassifiedError("RATE_LIMITED", True, "retry", 429)
