@@ -80,6 +80,23 @@ def _error_paths(error: Exception) -> list[str]:
     return ["$"]
 
 
+def _model_error_mutable_fields(model: type[T], error: Exception) -> set[str]:
+    """Return only fields that a known model-level invariant must coordinate."""
+
+    if model.__name__ != "VisualInspectionOutput":
+        return set()
+    message = str(error)
+    if "passed 与 decision" in message:
+        return {"passed", "decision"}
+    if "通过结论不得同时包含偏差或返工 Prompt" in message:
+        return {"passed", "decision", "deviations", "rework_prompt_delta"}
+    if "未通过结论必须包含至少一个具体偏差" in message:
+        return {"passed", "decision", "deviations"}
+    if "继续返工必须包含非空返工 Prompt" in message:
+        return {"decision", "rework_prompt_delta"}
+    return set()
+
+
 def _valid_original_fields(model: type[T], raw: Any, expected: dict[str, Any], error: Exception) -> dict[str, Any]:
     try:
         value = extract_json_object(raw) if isinstance(raw, str) else raw
@@ -87,13 +104,10 @@ def _valid_original_fields(model: type[T], raw: Any, expected: dict[str, Any], e
         return {}
     if not isinstance(value, dict):
         return {}
-    required = {name for name, field in model.model_fields.items() if field.is_required()}
     paths = _error_paths(error)
-    # Incomplete objects and model-level semantic contradictions may require
-    # coordinated changes; only freeze fields for a complete, field-local error.
-    if not required.issubset(value) or "$" in paths:
-        return {}
     invalid = {path.removeprefix("$.").split(".", 1)[0] for path in paths}
+    if "$" in paths:
+        invalid = _model_error_mutable_fields(model, error)
     frozen: dict[str, Any] = {}
     for name, field in model.model_fields.items():
         if name not in value or name in invalid or (name in expected and value[name] != expected[name]):
