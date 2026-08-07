@@ -39,6 +39,8 @@ class RuntimeModelGateway:
             if is_image:
                 self.store.prompts.status(call_id, "provider_completed")
             self.store.prompts.complete(call_id, output_raw=result)
+            self.store.events.append("model_call_completed", call_id=call_id, parent_call_id=parent_call_id,
+                                     state=state, trace_id=trace, output_hash=content_hash(result))
             if is_image and isinstance(result, dict):
                 result = {**result, "_model_call_id": call_id}
             return result

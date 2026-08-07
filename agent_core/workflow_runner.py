@@ -626,11 +626,14 @@ class WorkflowRunner:
                     messages=[{"role":"user","content":current_prompt},{"role":"image","content":image_uri}],
                     variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri],
                     parent_call_id=parent, audit_context=audit_context, needs_images=1)
-            return validate_with_one_repair(
+            parsed = validate_with_one_repair(
                 output_kind="visual_inspection", model=VisualInspectionOutput, invoke=invoke,
                 prompt=inspection_prompt, schema=VisualInspectionOutput.model_json_schema(),
                 on_failure=self._record_structured_output_failure,
             ).model_dump()
+            if audit_context.get("call_id"):
+                parsed["model_call_id"] = audit_context["call_id"]
+            return parsed
 
     def _record_structured_output_failure(self, error: RecoverableStructuredOutputError) -> None:
         self.store.events.append(
