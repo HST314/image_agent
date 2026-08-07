@@ -181,6 +181,36 @@ def test_claim_recovery_never_overwrites_existing_or_unknown_project_data(
     assert marker.read_bytes() == b"do-not-touch"
 
 
+def test_different_envelope_cannot_take_over_empty_directory_owned_by_old_claim(
+    client: TestClient,
+) -> None:
+    original = json.loads(Path("examples/design_task_envelope_v1.valid.json").read_text(encoding="utf-8"))
+    original["idempotency_key"] = "original-registration"
+    original["task"]["project_id"] = "shared-canonical"
+    original_hash = main_front.content_hash(original)
+    main_front.ProjectStore.claim_design_task(
+        main_front.PROJECTS_ROOT, "shared-canonical", original["idempotency_key"], original_hash
+    )
+    root = main_front.PROJECTS_ROOT / "shared-canonical"
+    root.mkdir()
+    main_front.ProjectStore.abandon_design_task(
+        main_front.PROJECTS_ROOT, original["idempotency_key"], original_hash, "shared-canonical"
+    )
+    before = list(root.iterdir())
+
+    different = json.loads(json.dumps(original))
+    different["idempotency_key"] = "different-registration"
+    different["task"]["deliverable_goal"] = "字节不同的新任务不得接管旧登记目录"
+    assert main_front.content_hash(different) != original_hash
+    response = client.post(
+        "/api/projects",
+        json={"project_id": "shared-canonical", "envelope": different, "offline": True},
+    )
+
+    assert response.status_code == 409
+    assert list(root.iterdir()) == before == []
+
+
 def test_http_task_spec_confirmation_contract(client: TestClient) -> None:
     task = {
         "task_id": "task-confirm", "project_id": "confirm-web",

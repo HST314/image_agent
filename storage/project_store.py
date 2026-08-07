@@ -288,6 +288,12 @@ class ProjectStore:
                                 owner_start=_process_start_time(os.getpid()), claimed_at=_now())
                 atomic_json(registry_path, registry)
                 return canonical, True
+            if any(
+                record.get("project_id") == project_id
+                for registered_key, record in registry.items()
+                if registered_key != key
+            ):
+                raise ProjectExistsError("工程目录已绑定其他幂等登记，拒绝接管。")
             registry[key] = {"project_id": project_id, "raw_hash": raw_hash, "status": "pending",
                              "owner_pid": os.getpid(), "owner_start": _process_start_time(os.getpid()),
                              "claimed_at": _now()}
