@@ -89,6 +89,29 @@ def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) 
     assert data["snapshot"].get("completed") is not True
 
 
+def test_envelope_creation_recovers_after_claim_then_create_crash(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    envelope = __import__("json").loads(Path("examples/design_task_envelope_v1.valid.json").read_text(encoding="utf-8"))
+    envelope["task"]["project_id"] = "crash-recovery"
+    original = main_front.ProjectStore.create
+    calls = 0
+
+    def crash_once(store, config=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("injected crash after claim")
+        return original(store, config)
+
+    monkeypatch.setattr(main_front.ProjectStore, "create", crash_once)
+    body = {"project_id": "crash-recovery", "envelope": envelope, "offline": True}
+    assert client.post("/api/projects", json=body).status_code == 503
+    recovered = client.post("/api/projects", json=body)
+    assert recovered.status_code == 201, recovered.text
+    assert recovered.json()["project_id"] == "crash-recovery"
+
+
 def test_http_task_spec_confirmation_contract(client: TestClient) -> None:
     task = {
         "task_id": "task-confirm", "project_id": "confirm-web",

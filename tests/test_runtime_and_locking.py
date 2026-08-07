@@ -70,3 +70,17 @@ def test_process_lock_competes_and_recovers_after_termination(tmp_path: Path):
     with ProjectStore(tmp_path, "p").lock():
         info = json.loads((tmp_path / "p" / ".lock").read_text())
         assert info["pid"] == os.getpid()
+
+
+def test_previously_unwired_policy_fields_are_enforced(tmp_path: Path) -> None:
+    raw = Path("configs/runtime.yaml").read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="approval_required"):
+        RuntimePolicy.from_file(_write_policy(tmp_path, raw.replace("approval_required: true", "approval_required: false")))
+    with pytest.raises(ValueError, match="image_api_base_url"):
+        RuntimePolicy.from_file(_write_policy(tmp_path, raw.replace('image_api_base_url: ""', 'image_api_base_url: "not-a-url"')))
+
+
+def _write_policy(tmp_path: Path, value: str) -> Path:
+    path = tmp_path / "runtime.yaml"
+    path.write_text(value, encoding="utf-8")
+    return path

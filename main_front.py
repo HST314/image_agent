@@ -223,6 +223,8 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
         def execute() -> dict[str, Any]:
             raw_hash = content_hash(body.envelope) if envelope else None
+            claimed_project = project_id
+            newly_claimed = False
             if envelope:
                 claimed_project, newly_claimed = ProjectStore.claim_design_task(PROJECTS_ROOT, project_id, envelope.idempotency_key, raw_hash)
                 claimed_store = _store(claimed_project)
@@ -230,17 +232,25 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
                     return _project_view(claimed_store)
                 if not newly_claimed:
                     raise ValueError("同一幂等任务正在创建中，请稍后重试。")
-            store = _store(project_id)
-            policy = RuntimePolicy.from_file(RUNTIME_CONFIG)
-            metadata = {"runtime_policy": policy.snapshot("offline" if body.offline else "real")}
-            if envelope:
-                metadata.update({"design_task_schema_version": envelope.schema_version,
-                                 "idempotency_key": envelope.idempotency_key,
-                                 "raw_task_sha256": raw_hash})
-            store.create(metadata)
-            _runner(store, body.offline).run({"task_card": task.model_dump(mode="json"),
-                "raw_design_task_envelope": body.envelope if envelope else None}, RunnerOptions())
-            return _project_view(store)
+            store = _store(claimed_project)
+            try:
+                claimed_task = task if task.project_id == claimed_project else task.model_copy(update={"project_id": claimed_project})
+                policy = RuntimePolicy.from_file(RUNTIME_CONFIG)
+                metadata = {"runtime_policy": policy.snapshot("offline" if body.offline else "real")}
+                if envelope:
+                    metadata.update({"design_task_schema_version": envelope.schema_version,
+                                     "idempotency_key": envelope.idempotency_key,
+                                     "raw_task_sha256": raw_hash})
+                store.create(metadata)
+                if envelope:
+                    ProjectStore.finish_design_task(PROJECTS_ROOT, envelope.idempotency_key, raw_hash, claimed_project)
+                _runner(store, body.offline).run({"task_card": claimed_task.model_dump(mode="json"),
+                    "raw_design_task_envelope": body.envelope if envelope else None}, RunnerOptions())
+                return _project_view(store)
+            except Exception:
+                if envelope and newly_claimed and not (store.root / "manifest.json").is_file():
+                    ProjectStore.abandon_design_task(PROJECTS_ROOT, envelope.idempotency_key, raw_hash, claimed_project)
+                raise
 
         return await asyncio.to_thread(execute)
     except Exception as exc:

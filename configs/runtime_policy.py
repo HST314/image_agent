@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -52,6 +53,12 @@ class RuntimePolicy(BaseModel):
             raise ValueError("max_auto_questions 不能超过 clarification_total_budget")
         if self.question_mode == "manual" and self.max_auto_questions:
             raise ValueError("question_mode=manual 时 max_auto_questions 必须为 0")
+        if not self.approval_required:
+            raise ValueError("approval_required=false 与任务书及最终确认强制门禁冲突")
+        if self.image_api_base_url:
+            parsed = urlparse(self.image_api_base_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("image_api_base_url 必须为空或有效的 HTTP(S) 地址")
         return self
 
     @classmethod

@@ -17,12 +17,12 @@ class ArkImageRenderClient(ImageRenderClient):
 
     def __init__(
         self,
-        base_url: str = DEFAULT_ARK_BASE_URL,
+        base_url: str | None = None,
         api_key: str | None = None,
         model: str = DEFAULT_ARK_IMAGE_MODEL,
     ) -> None:
         super().__init__(
-            base_url=os.getenv("ARK_BASE_URL", base_url),
+            base_url=base_url or os.getenv("ARK_BASE_URL") or DEFAULT_ARK_BASE_URL,
             api_key=api_key or os.getenv("ARK_API_KEY"),
             model=model,
         )

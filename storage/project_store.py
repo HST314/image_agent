@@ -252,10 +252,50 @@ class ProjectStore:
             if existing:
                 if existing.get("raw_hash") != raw_hash:
                     raise ValueError("同一幂等键不能提交不同的原始任务。")
-                return str(existing["project_id"]), False
-            registry[key] = {"project_id": project_id, "raw_hash": raw_hash, "claimed_at": _now()}
+                canonical = str(existing["project_id"])
+                manifest_exists = (root / canonical / "manifest.json").is_file()
+                owner_alive = _same_process(existing.get("owner_pid"), existing.get("owner_start"))
+                if existing.get("status") == "committed" or manifest_exists:
+                    return canonical, False
+                if existing.get("status") == "pending" and owner_alive:
+                    return canonical, False
+                existing.update(status="pending", owner_pid=os.getpid(),
+                                owner_start=_process_start_time(os.getpid()), claimed_at=_now())
+                atomic_json(registry_path, registry)
+                return canonical, True
+            registry[key] = {"project_id": project_id, "raw_hash": raw_hash, "status": "pending",
+                             "owner_pid": os.getpid(), "owner_start": _process_start_time(os.getpid()),
+                             "claimed_at": _now()}
             atomic_json(registry_path, registry)
             return project_id, True
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    @classmethod
+    def finish_design_task(cls, projects_root: str | Path, key: str, raw_hash: str, project_id: str) -> None:
+        cls._set_design_task_claim_status(projects_root, key, raw_hash, project_id, "committed")
+
+    @classmethod
+    def abandon_design_task(cls, projects_root: str | Path, key: str, raw_hash: str, project_id: str) -> None:
+        cls._set_design_task_claim_status(projects_root, key, raw_hash, project_id, "abandoned")
+
+    @classmethod
+    def _set_design_task_claim_status(cls, projects_root: str | Path, key: str, raw_hash: str,
+                                      project_id: str, status: str) -> None:
+        root = Path(projects_root)
+        descriptor = os.open(root / ".design-task-idempotency.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            path = root / ".design-task-idempotency.json"
+            registry = json.loads(path.read_text(encoding="utf-8"))
+            record = registry.get(key)
+            if (not record or record.get("raw_hash") != raw_hash
+                    or record.get("project_id") != project_id):
+                raise ValueError("幂等登记与待更新任务不一致。")
+            record["status"] = status
+            record[f"{status}_at"] = _now()
+            atomic_json(path, registry)
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
@@ -383,3 +423,10 @@ def _process_start_time(pid: int) -> str:
         return Path(f"/proc/{pid}/stat").read_text().split()[21]
     except (OSError, IndexError):
         return "unknown"
+
+
+def _same_process(pid: Any, start: Any) -> bool:
+    if not isinstance(pid, int) or not isinstance(start, str):
+        return False
+    actual = _process_start_time(pid)
+    return actual != "unknown" and actual == start

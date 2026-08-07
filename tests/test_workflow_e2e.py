@@ -14,6 +14,7 @@ from agent_core.workflow import SelfCheckPolicy, InvalidTransitionError
 from calibrator.calibration_loop import CalibrationLoop
 from storage.assets import normalize_image_asset
 from storage.project_store import ProjectLockError
+from configs.runtime_policy import RuntimePolicy
 
 def _try_project_lock(root: str, queue) -> None:
     try:
@@ -197,6 +198,18 @@ def test_clarification_budget_and_fingerprints_survive_resume(tmp_path: Path):
     assert len(restored["previous_fingerprints"]) == 3
     second = runner.run(restored, RunnerOptions(clarification_answers={"output_spec":"9:16"}), only_state="intake_clarify")
     assert second["clarification_asked_count"] == 3 and second["clarification_remaining_budget"] == 7
+
+
+def test_max_clarify_rounds_is_a_hard_runtime_limit(tmp_path: Path):
+    policy = RuntimePolicy.from_file(Path("configs/runtime.yaml")).model_copy(update={"max_clarify_rounds": 0})
+    store = ProjectStore(tmp_path, "clarify-limit")
+    store.create({"runtime_policy": policy.snapshot("offline")})
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True, runtime_policy=policy)
+    result = runner.run({"task_card": {**task_payload(), "unknowns": {
+        "output_spec": {"impact": "影响构图", "blocking": True, "has_safe_default": False}
+    }}}, RunnerOptions(), only_state="intake_clarify")
+    assert result["phase"] == "clarification_round_limit_reached"
+    assert result["clarification_round_count"] == 0
 
 def test_blocked_and_manual_end_cannot_be_delivered(tmp_path: Path):
     store = ProjectStore(tmp_path, "blocked"); store.create()
