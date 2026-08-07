@@ -65,6 +65,32 @@ python3 -m py_compile main_front.py
 - **降级**：当前资产不是受控 artifact（如离线 mock）时不渲染画布，仅保留文字微调；
   图像载入失败显示可恢复提示。
 
+## 交付与人工回传（P1-09 前端）
+
+最终确认（`completed` / `delivery_frozen`）后，交付区域挂载在监督台完成面板内，
+只消费独立的 `GET /api/projects/{project_id}/delivery` 契约渲染，不从 checkpoint
+拼装 Delivery：稳定资产图（受控 API）、真实 SHA-256、格式/尺寸/字节数、
+“设计理念/选择理由/任务适配点”三段说明、说明来源摘要、任务书确认与最终确认摘要、
+trace 引用，以及待回传/已回传状态。
+
+- **显式动作**：`POST …/delivery/generate` 仅在点击“生成/重新生成说明”时触发；
+  说明生成失败保留最终图与确认事实并允许独立重试。`POST …/delivery/return`
+  提交 `delivery_version/actor/target/idempotency_key`，幂等键按
+  `delivery-return:<载荷哈希>` 派生，同一载荷重试键稳定；回传成功后重新读取
+  Delivery 并展示 actor/时间/目标/版本。
+- **状态与恢复**：未生成/生成中/失败可重试/待回传/已回传均有真实文案；请求中禁用
+  提交按钮并以 `deliveryUi.generating/returning` 守卫，重复点击只发一次请求；
+  409 冲突与网络失败保留表单草稿并显示可恢复错误。资产或说明版本变化产生新
+  Delivery 版本，回传 UI 严格按当前版本 `return_status` 渲染，不沿用旧版本状态。
+- **边界**：哈希、冻结、确认与幂等安全门禁由服务端独占执行，前端不复制；无自动
+  通知、无外部事件流、无后台定时拉取——Delivery 仅在进入工程、显式动作成功后
+  与手动刷新时读取。
+
+```bash
+# P1-09 交付与人工回传 UI 契约测试（需要 node；含 Node DOM shim 交互驱动与跨栈探针）
+python3 -m pytest -q tests/test_p1_09_delivery_ui.py
+```
+
 ## 安全边界
 
 - 工程 ID 仅允许 2–64 位字母、数字、下划线与连字符，阻止路径穿越。
