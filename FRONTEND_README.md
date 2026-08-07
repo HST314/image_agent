@@ -69,10 +69,23 @@ python3 -m py_compile main_front.py
   `find ... -type f -print0 | sort -z | xargs -0 sha256sum`，再执行 `diff -u`；
   预期无输出且退出码为 0。
 
+## 异步推进 API（v1.8）
+
+`POST /api/projects/{project_id}/advance` 不再执行长耗时模型调用，只以请求中的
+`idempotency_key`（未提供时由当前 checkpoint 与动作参数稳定派生）创建作业并返回
+`202`、`job_id`。相同键并发提交只得到同一个作业；同键不同参数返回 `409`。
+
+- `GET /api/projects/{project_id}/jobs/{job_id}` 查询 `queued/running/succeeded/failed/cancelled`。
+- `POST /api/projects/{project_id}/jobs/{job_id}/cancel` 请求取消；已进入供应商调用的作业不会伪称立即中止，完成边界后落为 `cancelled`。
+- `GET /api/projects/{project_id}/events?after=<sequence>` 提供 SSE。也可发送 `Last-Event-ID`，服务端只续传更大序号。
+- worker 启动或状态查询会接管失去存活进程所有者的 `running` 作业。候选五槽、质检和返工仍复用原有稳定幂等键，因此进程退出、刷新和请求超时不会新建付费槽位。
+- 人工等待通过 `business_status` 暴露，均为成功 checkpoint，不进入 `failed_step`。项目创建时固化的 real/offline 模式对所有后续作业强制生效。
+
+作业响应契约见 `schemas/AsyncJob.v1.schema.json`。
+
 ## 已知限制
 
-- 当前适配层按一次请求推进一个生产检查点；真实图片生成可能持续较久，页面会显示
-  忙碌状态并在 120 秒后提示刷新检查点。后端仍可能继续完成，不会伪造取消。
+- 当前使用文件型持久作业注册表和进程内 worker；适合单机/共享文件卷部署。多节点部署需要将调度器替换为具备同等 claim 与幂等语义的队列。
 - 外部 HTTP 图片由原供应商 URL 展示；本地生成图片需已进入生产 artifact store。
 - 没有真实模型凭证时只能显式选择离线测试模式，模拟图片受生产最终门禁限制。
 - 四档截图在当前执行容器中未能生成：系统 Firefox 无头模式报告

@@ -9,11 +9,12 @@ import asyncio
 import mimetypes
 import os
 import re
+import json
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_core.models import DesignDeliveryEnvelope, DesignTaskEnvelope, ImageTaskCard
@@ -21,6 +22,7 @@ from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore, content_hash
 from configs.runtime_policy import RuntimePolicy
+from agent_core.jobs import JobStore, WorkflowJobWorker
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 
@@ -55,6 +57,7 @@ class CreateProjectRequest(StrictRequest):
 
 
 class AdvanceRequest(StrictRequest):
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     selected_id: str | None = Field(default=None, max_length=128)
     clarification_answers: dict[str, Any] | None = None
     edited_markdown: str | None = Field(default=None, max_length=100_000)
@@ -126,8 +129,63 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
         "manifest": manifest,
         "snapshot": snapshot,
         "history": store.history(),
+        "business_status": _business_status(snapshot),
         "capabilities": _capabilities(manifest, snapshot),
     }
+
+
+def _business_status(snapshot: dict[str, Any]) -> str:
+    phase = str(snapshot.get("phase") or "")
+    waiting = {
+        "waiting_clarification": "waiting_clarification",
+        "waiting_task_spec_confirmation": "waiting_task_spec_confirmation",
+        "waiting_master_selection": "waiting_master_selection",
+        "waiting_human_approval": "waiting_quality_decision",
+        "waiting_human_rework": "waiting_human_rework",
+        "waiting_reinspection": "waiting_reinspection",
+        "waiting_final_confirmation": "waiting_final_confirmation",
+    }
+    if phase in waiting:
+        return waiting[phase]
+    if snapshot.get("delivery_frozen"):
+        return "delivery_frozen"
+    return str(snapshot.get("state") or "received")
+
+
+def _job_store(project_id: str) -> JobStore:
+    store = _store(project_id)
+    store.manifest()
+    return JobStore(store.root)
+
+
+def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
+    jobs = _job_store(project_id)
+    job = jobs.claim(reference["job_id"])
+    if job is None:
+        return
+    store = _store(project_id)
+    store.events.append("job_started", job_id=job["job_id"], attempt=job["attempt"])
+    try:
+        payload = job["payload"]
+        body = AdvanceRequest.model_validate(payload["options"])
+        snapshot = store.resume()
+        if snapshot is None:
+            raise ValueError("工程还没有可恢复节点。")
+        _runner(store, payload["mode"] == "offline").run(snapshot, _options(body))
+        finished = jobs.finish(job["job_id"])
+        store.events.append("job_finished", job_id=job["job_id"], status=finished["status"])
+    except Exception as exc:
+        finished = jobs.finish(job["job_id"], error={"code": type(exc).__name__, "message": str(exc),
+                                                        "retryable": not isinstance(exc, (ValueError, TypeError))})
+        store.events.append("job_finished", job_id=job["job_id"], status=finished["status"], error=finished.get("error"))
+
+
+JOB_WORKER = WorkflowJobWorker(_execute_job)
+
+
+def _recover_jobs(project_id: str) -> None:
+    for job_id in _job_store(project_id).recoverable():
+        JOB_WORKER.submit(project_id, job_id)
 
 
 def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
@@ -280,20 +338,72 @@ async def get_project(project_id: str) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
-@app.post("/api/projects/{project_id}/advance")
+@app.post("/api/projects/{project_id}/advance", status_code=status.HTTP_202_ACCEPTED)
 async def advance_project(project_id: str, body: AdvanceRequest) -> dict[str, Any]:
     try:
-        def execute() -> dict[str, Any]:
-            store = _store(project_id)
-            snapshot = store.resume()
-            if snapshot is None:
-                raise ValueError("工程还没有可恢复节点。")
-            _runner(store, body.offline).run(snapshot, _options(body))
-            return _project_view(store)
-
-        return await asyncio.to_thread(execute)
+        store = _store(project_id)
+        snapshot = store.resume()
+        if snapshot is None:
+            raise ValueError("工程还没有可恢复节点。")
+        mode = "offline" if body.offline else "real"
+        store.assert_runtime_mode(mode)
+        options = body.model_dump(mode="json")
+        supplied_key = options.pop("idempotency_key", None)
+        key = supplied_key or content_hash([store.manifest()["current_checkpoint"], options])
+        job, created = _job_store(project_id).create(key, {"options": options, "mode": mode})
+        if created:
+            store.events.append("job_queued", job_id=job["job_id"], idempotency_key=key)
+        JOB_WORKER.submit(project_id, job["job_id"])
+        return {"job_id": job["job_id"], "status": job["status"], "created": created,
+                "status_url": f"/api/projects/{project_id}/jobs/{job['job_id']}"}
     except Exception as exc:
         raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/jobs/{job_id}")
+async def get_job(project_id: str, job_id: str) -> dict[str, Any]:
+    try:
+        _recover_jobs(project_id)
+        return _job_store(project_id).get(job_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/jobs/{job_id}/cancel")
+async def cancel_job(project_id: str, job_id: str) -> dict[str, Any]:
+    try:
+        result = _job_store(project_id).cancel(job_id)
+        _store(project_id).events.append("job_cancel_requested", job_id=job_id, status=result["status"])
+        return result
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/events")
+async def project_events(project_id: str, request: Request, after: int = 0) -> StreamingResponse:
+    """SSE stream with monotonic sequence resume (`after` or Last-Event-ID)."""
+    try:
+        store = _store(project_id)
+        store.manifest()
+        cursor = max(after, int(request.headers.get("last-event-id", "0") or 0))
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+    async def stream():
+        nonlocal cursor
+        idle = 0
+        while idle < 150 and not await request.is_disconnected():
+            events = [event for event in store.history() if int(event.get("sequence", 0)) > cursor]
+            if events:
+                idle = 0
+                for event in events:
+                    cursor = int(event["sequence"])
+                    yield f"id: {cursor}\nevent: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+            else:
+                idle += 1
+                yield ": keepalive\n\n"
+            await asyncio.sleep(.2)
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/projects/{project_id}/retry")

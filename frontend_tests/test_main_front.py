@@ -6,6 +6,8 @@ import base64
 import json
 import multiprocessing
 import os
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -226,6 +228,50 @@ def test_http_task_spec_confirmation_contract(client: TestClient) -> None:
     confirmed = client.post("/api/projects/confirm-web/advance", json={
         "offline":True, "task_spec_action":"confirm", "actor":"operator-1"
     })
-    assert confirmed.status_code == 200
-    fact = confirmed.json()["snapshot"]["task_spec_confirmation"]
+    assert confirmed.status_code == 202
+    job_id = confirmed.json()["job_id"]
+    for _ in range(100):
+        job = client.get(f"/api/projects/confirm-web/jobs/{job_id}").json()
+        if job["status"] in {"succeeded", "failed", "cancelled"}:
+            break
+        time.sleep(.01)
+    assert job["status"] == "succeeded"
+    fact = client.get("/api/projects/confirm-web").json()["snapshot"]["task_spec_confirmation"]
     assert fact["actor"] == "operator-1" and fact["subject_sha256"]
+
+
+def test_advance_is_idempotent_async_job_and_mode_is_immutable(client: TestClient) -> None:
+    task = {"task_id":"async", "project_id":"async-web", "source_refs":[{"ref_id":"b","ref_type":"brief"}],
+            "deliverable_goal":"海报", "usage_context":"审核", "known_facts":{"主体":"产品"},
+            "unknowns":{}, "asset_inputs":[], "status":"draft"}
+    assert client.post("/api/projects", json={"project_id":"async-web", "task_card":task, "offline":True}).status_code == 201
+    payload = {"offline":True, "task_spec_action":"confirm", "actor":"operator", "idempotency_key":"confirm-key-001"}
+    responses = []
+    def submit():
+        responses.append(client.post("/api/projects/async-web/advance", json=payload))
+    threads = [threading.Thread(target=submit) for _ in range(8)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join()
+    assert {response.status_code for response in responses} == {202}
+    bodies = [response.json() for response in responses]
+    assert len({body["job_id"] for body in bodies}) == 1
+    assert sum(bool(body["created"]) for body in bodies) == 1
+    switched = client.post("/api/projects/async-web/advance", json={"offline":False, "idempotency_key":"switch-key-001"})
+    assert switched.status_code == 409
+
+
+def test_job_cancel_and_event_sequences(client: TestClient, monkeypatch) -> None:
+    task = {"task_id":"cancel", "project_id":"cancel-web", "source_refs":[{"ref_id":"b","ref_type":"brief"}],
+            "deliverable_goal":"海报", "usage_context":"审核", "known_facts":{"主体":"产品"},
+            "unknowns":{}, "asset_inputs":[], "status":"draft"}
+    assert client.post("/api/projects", json={"project_id":"cancel-web", "task_card":task, "offline":True}).status_code == 201
+    original_submit = main_front.JOB_WORKER.submit
+    monkeypatch.setattr(main_front.JOB_WORKER, "submit", lambda *_: None)
+    queued = client.post("/api/projects/cancel-web/advance", json={"offline":True, "idempotency_key":"cancel-key-001"})
+    cancelled = client.post(f"/api/projects/cancel-web/jobs/{queued.json()['job_id']}/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
+    monkeypatch.setattr(main_front.JOB_WORKER, "submit", original_submit)
+    events = main_front._store("cancel-web").history()
+    sequences = [event["sequence"] for event in events]
+    assert sequences == list(range(1, len(sequences) + 1))
+    assert [event["sequence"] for event in events if event["sequence"] > sequences[-2]] == [sequences[-1]]
