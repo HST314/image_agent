@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,7 +32,9 @@ class RunnerOptions:
     manual_action: ManualAction | None = None
     human_prompt: str | None = None
     edited_markdown: str | None = None
-    final_approved: bool = False
+    task_spec_action: str | None = None
+    final_action: str | None = None
+    actor: str | None = None
     clarification_answers: dict[str, Any] | None = None
 
 
@@ -58,8 +61,10 @@ class WorkflowRunner:
 
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
-        if snapshot.get("phase") in {"waiting_human_approval", "waiting_clarification", "waiting_master_selection"}:
+        if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection"}:
             return str(snapshot.get("state"))
+        if snapshot.get("phase") == "waiting_human_rework":
+            return "human_prompt_iteration"
         if snapshot.get("phase") == "waiting_reinspection":
             return "self_check_iteration"
         current = str(snapshot.get("state", ""))
@@ -124,10 +129,29 @@ class WorkflowRunner:
         spec = TaskSpecification.model_validate(data["task_specification"]) if data.get("task_specification") else specification_from_task(ImageTaskCard.model_validate(data["task_card"]))
         if options.get("edited_markdown"):
             spec = update_specification_from_markdown(spec, options["edited_markdown"])
-        return {"task_specification": spec.model_dump(mode="json"), "task_markdown": specification_to_markdown(spec), "waiting": False}
+            self.store.events.append("task_spec_confirmation_invalidated", reason="task_spec_edited",
+                                     task_spec_version=spec.version, subject_sha256=spec.content_hash)
+        confirmation = data.get("task_spec_confirmation")
+        if options.get("task_spec_action") == "confirm":
+            actor = str(options.get("actor") or "").strip()
+            if not actor:
+                raise ValueError("确认任务书必须提供 actor。")
+            confirmation = {"task_spec_version": spec.version, "subject_sha256": spec.content_hash,
+                            "actor": actor, "confirmed_at": datetime.now(timezone.utc).isoformat()}
+            self.store.events.append("task_spec_confirmed", **confirmation)
+        valid = bool(confirmation and confirmation.get("task_spec_version") == spec.version
+                     and confirmation.get("subject_sha256") == spec.content_hash)
+        return {"task_specification": spec.model_dump(mode="json"), "task_markdown": specification_to_markdown(spec),
+                "task_spec_confirmation": confirmation if valid else None, "waiting": not valid,
+                "phase": "task_spec_confirmed" if valid else "waiting_task_spec_confirmation"}
 
     def _candidates(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         spec = TaskSpecification.model_validate(data["task_specification"])
+        confirmation = data.get("task_spec_confirmation") or {}
+        if (confirmation.get("task_spec_version") != spec.version
+                or confirmation.get("subject_sha256") != spec.content_hash
+                or not confirmation.get("actor") or not confirmation.get("confirmed_at")):
+            raise ValueError("当前任务书版本尚未人工确认，禁止调用付费生图。")
         task_card = ImageTaskCard.model_validate(data["task_card"])
         
         # 1. 匹配广告品类 Skill
@@ -236,8 +260,23 @@ class WorkflowRunner:
             satisfied = False
         if not data.get("selected_policy") or not data.get("termination_reason"):
             satisfied = False
-        self.workflow.validate_final_asset(asset, human_approved=bool(options.get("final_approved")), self_check_complete=satisfied)
-        return {"final_asset": asset, "completed": True}
+        action = options.get("final_action")
+        if action == "continue":
+            self.store.events.append("final_confirmation_declined", asset_sha256=asset.get("sha256"),
+                                     actor=options.get("actor"))
+            return {"waiting": True, "phase": "waiting_human_rework", "completed": False,
+                    "final_confirmation": None}
+        if action != "confirm":
+            return {"waiting": True, "phase": "waiting_final_confirmation", "completed": False}
+        actor = str(options.get("actor") or "").strip()
+        if not actor:
+            raise ValueError("最终确认必须提供 actor。")
+        self.workflow.validate_final_asset(asset, human_approved=True, self_check_complete=satisfied)
+        approval = {"asset_sha256": asset["sha256"], "actor": actor,
+                    "confirmed_at": datetime.now(timezone.utc).isoformat()}
+        self.store.events.append("final_asset_confirmed", **approval)
+        return {"final_asset": asset, "final_confirmation": approval, "completed": True,
+                "delivery_frozen": True, "waiting": False, "phase": "delivery_frozen"}
 
     def _text(self, route: ModelRoute):
         client = build_text_client(route.binding)

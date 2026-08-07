@@ -22,7 +22,9 @@ def _flow_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--edited-delta", help="选择编辑建议后执行时的新建议")
     command.add_argument("--human-prompt", help="质检后人工自然语言修改要求")
     command.add_argument("--edited-task-markdown", type=Path, help="编辑后的任务书；保存为结构化新版本")
-    command.add_argument("--approve-final", action="store_true")
+    command.add_argument("--confirm-task-spec", action="store_true")
+    command.add_argument("--final-action", choices=("confirm", "continue"))
+    command.add_argument("--actor", help="执行人工确认的操作者标识")
     command.add_argument("--clarification-answers", type=Path, help="澄清答案 JSON（字段到答案）")
 
 
@@ -51,7 +53,9 @@ def _options(args: argparse.Namespace) -> RunnerOptions:
     answers = json.loads(args.clarification_answers.read_text(encoding="utf-8")) if getattr(args, "clarification_answers", None) else None
     return RunnerOptions(selected_id=getattr(args, "selected_id", None), manual_action=action,
                          human_prompt=getattr(args, "human_prompt", None), edited_markdown=markdown,
-                         final_approved=bool(getattr(args, "approve_final", False)), clarification_answers=answers)
+                         task_spec_action="confirm" if getattr(args, "confirm_task_spec", False) else None,
+                         final_action=getattr(args, "final_action", None), actor=getattr(args, "actor", None),
+                         clarification_answers=answers)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

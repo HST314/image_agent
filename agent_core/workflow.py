@@ -11,7 +11,7 @@ TRANSITIONS: TransitionMap = {
     "master_candidate_selection": frozenset({"self_check_iteration"}),
     "self_check_iteration": frozenset({"self_check_iteration", "human_prompt_iteration"}),
     "human_prompt_iteration": frozenset({"human_prompt_iteration", "self_check_iteration", "final_approval"}),
-    "final_approval": frozenset(),
+    "final_approval": frozenset({"human_prompt_iteration"}),
 }
 
 class InvalidTransitionError(ValueError):

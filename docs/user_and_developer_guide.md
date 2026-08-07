@@ -39,7 +39,9 @@ python3 main.py [全局参数] <命令> <project_id> [命令参数]
 | `--edited-delta <text>` | `edit_and_execute` 时替换 VLM 修改建议 |
 | `--human-prompt <text>` | 质检后追加自然语言修改要求 |
 | `--edited-task-markdown <path>` | 导入人工编辑后的任务书 Markdown，形成结构化新版本 |
-| `--approve-final` | 明确确认最终交付 |
+| `--confirm-task-spec` | 确认当前任务书版本和正文哈希，必须同时提供 `--actor` |
+| `--final-action <action>` | `confirm` 冻结交付；`continue` 返回人工修改 |
+| `--actor <id>` | 人工确认操作者标识 |
 | `--clarification-answers <path>` | 读取“字段到答案”的澄清答案 JSON |
 
 #### `new`：创建工程
@@ -78,6 +80,10 @@ python3 main.py resume campaign-001 \
 python3 main.py resume campaign-001 \
   --edited-task-markdown revised-task.md
 
+# 确认当前任务书
+python3 main.py resume campaign-001 \
+  --confirm-task-spec --actor operator-001
+
 # 五选一
 python3 main.py resume campaign-001 \
   --selected-id <候选编号>
@@ -96,7 +102,8 @@ python3 main.py resume campaign-001 \
   --human-prompt "主体向上移动约 5%，增加留白"
 
 # 最终确认
-python3 main.py resume campaign-001 --approve-final
+python3 main.py resume campaign-001 \
+  --final-action confirm --actor reviewer-001
 ```
 
 人工动作的精确定义：

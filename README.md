@@ -80,9 +80,10 @@ python3 main.py new demo --task /tmp/my-task.json
 
 ```bash
 python3 main.py resume demo --selected-id <候选编号>
+python3 main.py resume demo --confirm-task-spec --actor <操作者标识>
 python3 main.py resume demo --manual-action execute
 python3 main.py resume demo --human-prompt "增强主体金属质感，背景更克制"
-python3 main.py resume demo --approve-final
+python3 main.py resume demo --final-action confirm --actor <操作者标识>
 ```
 
 ### 常用命令
@@ -154,4 +155,3 @@ python3 -m pytest -q
 ```
 
 测试使用 Fake Clients / 离线客户端验证模型调用链，不消耗真实图片生成额度。
-

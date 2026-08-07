@@ -58,7 +58,9 @@ class AdvanceRequest(StrictRequest):
     manual_action: Literal["execute", "edit_and_execute", "skip", "end", "accept_current"] | None = None
     edited_delta: str | None = Field(default=None, max_length=4_000)
     human_prompt: str | None = Field(default=None, max_length=8_000)
-    final_approved: bool = False
+    task_spec_action: Literal["confirm"] | None = None
+    final_action: Literal["confirm", "continue"] | None = None
+    actor: str | None = Field(default=None, min_length=1, max_length=256)
     offline: bool = False
 
 
@@ -106,7 +108,9 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         manual_action=action,
         human_prompt=body.human_prompt,
         edited_markdown=body.edited_markdown,
-        final_approved=body.final_approved,
+        task_spec_action=body.task_spec_action,
+        final_action=body.final_action,
+        actor=body.actor,
         clarification_answers=body.clarification_answers,
     )
 
@@ -134,6 +138,12 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
         return ["answer_clarification"]
     if phase == "waiting_master_selection":
         return ["select_master"]
+    if phase == "waiting_task_spec_confirmation":
+        return ["edit_task_spec", "confirm_task_spec"]
+    if phase == "waiting_final_confirmation":
+        return ["confirm_final", "continue_modifying"]
+    if phase == "waiting_human_rework":
+        return ["human_rework", "branch"]
     if phase == "waiting_human_approval":
         return ["review_calibration"]
     if phase == "waiting_reinspection":

@@ -87,3 +87,23 @@ def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) 
     assert data["snapshot"]["state"] == "intake_clarify"
     assert data["manifest"]["current_checkpoint"]["sequence"] == 1
     assert data["snapshot"].get("completed") is not True
+
+
+def test_http_task_spec_confirmation_contract(client: TestClient) -> None:
+    task = {
+        "task_id": "task-confirm", "project_id": "confirm-web",
+        "source_refs": [{"ref_id": "brief-1", "ref_type": "brief"}],
+        "deliverable_goal": "海报", "usage_context": "审核", "known_facts": {"主体": "产品"},
+        "unknowns": {}, "asset_inputs": [], "status": "draft",
+    }
+    created = client.post("/api/projects", json={"project_id":"confirm-web", "task_card":task, "offline":True})
+    assert created.status_code == 201
+    view = created.json()
+    assert view["snapshot"]["phase"] == "waiting_task_spec_confirmation"
+    assert "confirm_task_spec" in view["capabilities"]
+    confirmed = client.post("/api/projects/confirm-web/advance", json={
+        "offline":True, "task_spec_action":"confirm", "actor":"operator-1"
+    })
+    assert confirmed.status_code == 200
+    fact = confirmed.json()["snapshot"]["task_spec_confirmation"]
+    assert fact["actor"] == "operator-1" and fact["subject_sha256"]
