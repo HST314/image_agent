@@ -130,6 +130,8 @@ python3 main.py --projects-root ./projects --debug inspect demo
 
 风格理解与视觉质检分别使用 `StyleUnderstandingOutput`、`VisualInspectionOutput` 严格 Schema。首次 JSON 解析或字段校验失败时，系统把校验错误与脱敏原响应交给同一 VLM 做一次定向修复；第二次仍失败会记录 `structured_output_recovery_required`（`retryable=true`）并停止后续生图/返工。系统不会补造缺失字段、置信度或默认“通过”；恢复时沿用既有 job、任务书哈希和候选槽位幂等语义。
 
+人工圈画微调通过 `POST /api/projects/{project_id}/advance` 的 `guided_edit` 提交。标注只接受 `coordinate_space: "source_image_pixels"`：所有矩形坐标、画笔点和粗细均是原图固有像素，不是 CSS 像素，也不乘设备像素比；前端须按 `source/rendered` 比例反算后提交。请求同时携带当前分支、当前头资产、原图宽高、非空 Prompt、actor 和连续轮次，顶层 `idempotency_key` 必填。服务端合成不可变指导图并保存为受控资产，新产物强制进入重新质检；跨项目、跨分支、非头资产及重复键变更载荷均被拒绝。
+
 兼容说明：旧自定义风格卡必须补齐 `summary`、非空 `tags`、`best_for`、`avoid_for`、`risk_notes` 和受控 `reference_image` 后才能被新版加载器接受；仓库内置目录不需要迁移脚本。
 
 ### `configs/runtime.yaml`

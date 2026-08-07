@@ -23,6 +23,7 @@ from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore, content_hash
 from configs.runtime_policy import RuntimePolicy
 from agent_core.jobs import JobStore, WorkflowJobWorker
+from agent_core.guided_edit import GuidedEditRequest
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 
@@ -64,6 +65,7 @@ class AdvanceRequest(StrictRequest):
     manual_action: Literal["execute", "edit_and_execute", "skip", "end", "accept_current"] | None = None
     edited_delta: str | None = Field(default=None, max_length=4_000)
     human_prompt: str | None = Field(default=None, max_length=8_000)
+    guided_edit: GuidedEditRequest | None = None
     task_spec_action: Literal["confirm"] | None = None
     final_action: Literal["confirm", "continue"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=256)
@@ -115,6 +117,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         selected_id=body.selected_id,
         manual_action=action,
         human_prompt=body.human_prompt,
+        guided_edit=body.guided_edit,
         edited_markdown=body.edited_markdown,
         task_spec_action=body.task_spec_action,
         final_action=body.final_action,

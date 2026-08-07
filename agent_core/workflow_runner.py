@@ -22,6 +22,7 @@ from render_clients.ark_client import ArkImageRenderClient
 from render_clients.payload_mapper import build_render_payload
 from storage.project_store import ProjectStore, content_hash
 from storage.assets import normalize_image_asset, persist_image_asset
+from agent_core.guided_edit import GuidedEditRequest, compose_guidance
 from interaction.presenter import Presenter
 from configs.runtime_policy import RuntimePolicy
 from model_router.executor import ModelExecutor
@@ -116,6 +117,7 @@ class RunnerOptions:
     selected_id: str | None = None
     manual_action: ManualAction | None = None
     human_prompt: str | None = None
+    guided_edit: dict[str, Any] | None = None
     edited_markdown: str | None = None
     task_spec_action: str | None = None
     final_action: str | None = None
@@ -486,26 +488,61 @@ class WorkflowRunner:
         return result
     
     def _human_rework(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
-        prompt = options.get("human_prompt")
+        guided = GuidedEditRequest.model_validate(options["guided_edit"]) if options.get("guided_edit") else None
+        prompt = guided.prompt if guided else options.get("human_prompt")
         if not prompt: return {"asset": data.get("current_asset") or data.get("asset"), "waiting": False}
         key = str(options.get("idempotency_key") or "").strip()
         if not key:
             raise ValueError("人工微调付费调用必须提供 idempotency_key。")
+        payload_hash = content_hash(guided.model_dump(mode="json")) if guided else content_hash(prompt)
         for event in reversed(self.store.history()):
             if event.get("type") == "human_rework_completed" and event.get("idempotency_key") == key:
-                if event.get("prompt_sha256") != content_hash(prompt):
-                    raise ValueError("同一幂等键不能用于不同人工微调 Prompt。")
+                if event.get("request_sha256", event.get("prompt_sha256")) != payload_hash:
+                    raise ValueError("同一幂等键不能用于不同人工微调请求。")
                 return dict(event["result"])
         current = data.get("current_asset") or data["asset"]
-        call_key = self.store.idempotency_key("human_prompt_rework", key, content_hash(prompt), current["sha256"])
-        result = self._image_call("human_prompt_rework", prompt, [str(current["uri"])], idempotency_key=call_key)
+        references = [str(current["uri"])]
+        guidance = None
+        if guided:
+            manifest = self.store.manifest()
+            if guided.branch != manifest["current_branch"]:
+                raise ValueError("输入资产不属于当前执行分支。")
+            if current.get("artifact_id") != guided.parent_asset_id:
+                raise ValueError("输入资产不是当前分支的最新可编辑资产。")
+            prior_rounds = [event for event in self.store.history()
+                            if event.get("type") == "human_rework_completed"
+                            and event.get("branch") == guided.branch and event.get("edit")]
+            if guided.round != len(prior_rounds) + 1:
+                raise ValueError("人工微调轮次必须在当前分支连续递增。")
+            parent_record = self.store.artifacts.record(guided.parent_asset_id)
+            owner_project = parent_record.get("project_id")
+            owner_branch = parent_record.get("branch")
+            if owner_project not in {None, self.store.project_id} or owner_branch not in {None, guided.branch}:
+                raise ValueError("拒绝跨项目或跨分支资产。")
+            guidance_bytes, media_type, width, height = compose_guidance(
+                self.store.artifacts.resolve(guided.parent_asset_id).read_bytes(), guided)
+            guidance = self.store.artifacts.save_bytes(guidance_bytes, suffix=".png", metadata={
+                "media_type": media_type, "provider": "server_compositor", "model": "p1-08",
+                "mock": False, "project_id": self.store.project_id, "branch": guided.branch,
+                "parent_asset_id": guided.parent_asset_id, "width": width, "height": height,
+                "kind": "guidance_image", "request_sha256": payload_hash,
+            })
+            references = [str(current["uri"]), str(guidance["uri"])]
+        call_key = self.store.idempotency_key("human_prompt_rework", key, payload_hash, current["sha256"])
+        result = self._image_call("human_prompt_rework", prompt, references, idempotency_key=call_key)
         asset = normalize_image_asset(result)
         self.store.events.append("calibration_invalidated", reason="human_rework", previous_checked_asset_hash=data.get("latest_checked_asset_hash"), new_asset_hash=asset["sha256"])
+        edit_record = ({"parent_asset_id": guided.parent_asset_id, "guidance_asset_id": guidance["artifact_id"],
+                        "prompt": prompt, "actor": guided.actor, "round": guided.round,
+                        "idempotency_key": key, "coordinate_space": guided.coordinate_space}
+                       if guided else None)
         outcome = {"asset": asset, "current_asset": asset, "waiting": True, "phase": "waiting_reinspection", "calibration_status": "invalidated",
                 "termination_satisfied": False, "termination_reason": "asset_changed_after_human_rework",
-                "latest_checked_asset_hash": None, "inspection": None}
+                "latest_checked_asset_hash": None, "inspection": None, "final_confirmation": None,
+                "guided_edit": edit_record}
         self.store.events.append("human_rework_completed", idempotency_key=key, provider_idempotency_key=call_key,
-                                 prompt_sha256=content_hash(prompt), result=outcome)
+                                 prompt_sha256=content_hash(prompt), request_sha256=payload_hash,
+                                 branch=self.store.manifest()["current_branch"], edit=edit_record, result=outcome)
         return outcome
 
     def _present_inspection(self, number: int, result: VisualCheckResult) -> None:
