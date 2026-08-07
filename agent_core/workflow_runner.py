@@ -593,7 +593,12 @@ class WorkflowRunner:
     def _text(self, route: ModelRoute):
         client = build_text_client(route.binding)
         if client is None: raise RuntimeError("文本模型不可用。")
-        return client
+        if route.stream_handler is None:
+            return client
+        class StreamingClient:
+            def complete(self, prompt: str, stream_handler=None):
+                return client.complete(prompt, stream_handler=stream_handler or route.stream_handler)
+        return StreamingClient()
 
     def _inspect(self, image_uri: str, prompt: str) -> dict[str, Any]:
             if self.offline_mode:
@@ -613,11 +618,14 @@ class WorkflowRunner:
                 f"设计任务书要求：\n{prompt}"
             )
             
+            audit_context: dict[str, Any] = {}
             def invoke(current_prompt: str) -> Any:
+                parent = audit_context.get("call_id")
                 return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
                     lambda route: self._vlm(route).inspect(image_uri, current_prompt),
                     messages=[{"role":"user","content":current_prompt},{"role":"image","content":image_uri}],
-                    variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
+                    variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri],
+                    parent_call_id=parent, audit_context=audit_context, needs_images=1)
             return validate_with_one_repair(
                 output_kind="visual_inspection", model=VisualInspectionOutput, invoke=invoke,
                 prompt=inspection_prompt, schema=VisualInspectionOutput.model_json_schema(),
@@ -665,7 +673,11 @@ class WorkflowRunner:
                 lambda route: {"uri": f"mock://{state}/{index or 0}", "mock": True, "provider": "offline", "model": route.binding.model},
                 messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references, "idempotency_key":idempotency_key},
                 template_id=state, template_version="2", input_refs=references, needs_images=len(references))
-            return normalize_image_asset(result)
+            asset = normalize_image_asset(result)
+            call_id = asset.pop("_model_call_id", None)
+            if call_id:
+                asset["model_call_id"] = call_id
+            return asset
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
             lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or None,
                 model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
@@ -673,4 +685,9 @@ class WorkflowRunner:
                 response_format=self.policy.response_format, watermark=self.policy.watermark, reference_images=references)),
             messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references, "idempotency_key":idempotency_key},
             template_id=state, template_version="2", input_refs=references, needs_images=len(references))
-        return persist_image_asset(result, self.store.artifacts)
+        call_id = result.pop("_model_call_id", None)
+        asset = persist_image_asset(result, self.store.artifacts)
+        if call_id:
+            self.store.prompts.status(call_id, "ingested", artifact_id=asset["artifact_id"], sha256=asset["sha256"])
+            asset["model_call_id"] = call_id
+        return asset

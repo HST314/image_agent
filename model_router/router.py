@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from typing import Callable
 from pathlib import Path
 
 import yaml
@@ -37,6 +38,7 @@ class ModelRoute:
     binding: StateBinding
     mock: bool
     key_env: str | None = None
+    stream_handler: Callable[[str], None] | None = None
 
 
 class ModelRouter:

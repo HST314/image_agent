@@ -11,7 +11,7 @@ class RuntimeModelGateway:
     def __init__(self, store: ProjectStore, router: ModelRouter, executor: ModelExecutor[Any] | None = None, *, offline_mode: bool = False) -> None:
         self.store, self.router, self.executor, self.offline_mode = store, router, executor or ModelExecutor(), offline_mode
 
-    def call(self, state: str, role: ModelRole, invoke: Callable[[Any], Any], *, messages: list[dict[str, Any]], variables: dict[str, Any], template_id: str, template_version: str, input_refs: list[str], parent_prompt: str | None = None, round_number: int | None = None, needs_images: int = 0) -> Any:
+    def call(self, state: str, role: ModelRole, invoke: Callable[[Any], Any], *, messages: list[dict[str, Any]], variables: dict[str, Any], template_id: str, template_version: str, input_refs: list[str], parent_prompt: str | None = None, parent_call_id: str | None = None, audit_context: dict[str, Any] | None = None, round_number: int | None = None, needs_images: int = 0) -> Any:
         self.router = self.router.reload_at_boundary()
         binding = self.router.validate_capability(state, role=role, needs_images=needs_images)
         route = ModelRoute(binding=binding, mock=True) if self.offline_mode else self.router.route_for_state(state)
@@ -21,6 +21,27 @@ class RuntimeModelGateway:
             "template_hash": content_hash(messages), "variables": variables, "input_refs": input_refs,
             "model": {"provider": binding.provider, "name": binding.model, "role": role.value},
             "parameters": binding.parameters, "config_hash": self.router.config_hash, "state": state,
-            "trace_id": trace, "parent_prompt": parent_prompt, "round": round_number}
+            "trace_id": trace, "parent_prompt": parent_prompt, "parent_call_id": parent_call_id,
+            "capability": state, "round": round_number}
         self.store.events.append("model_config_loaded", state=state, config_hash=self.router.config_hash, binding=snapshot)
-        return self.executor.audited_run(lambda: invoke(route), prompts=self.store.prompts, audit=audit)
+        call_id = self.store.prompts.begin(audit)
+        if audit_context is not None:
+            audit_context["call_id"] = call_id
+        is_image = role is ModelRole.TEXT_TO_IMAGE_MODEL
+        if is_image:
+            self.store.prompts.status(call_id, "queued")
+        route = ModelRoute(binding=route.binding, mock=route.mock, key_env=route.key_env,
+                           stream_handler=lambda delta: self.store.prompts.chunk(call_id, delta))
+        try:
+            if is_image:
+                self.store.prompts.status(call_id, "running")
+            result = self.executor.run(lambda: invoke(route), trace_id=trace)
+            if is_image:
+                self.store.prompts.status(call_id, "provider_completed")
+            self.store.prompts.complete(call_id, output_raw=result)
+            if is_image and isinstance(result, dict):
+                result = {**result, "_model_call_id": call_id}
+            return result
+        except Exception as exc:
+            self.store.prompts.fail(call_id, {"code": type(exc).__name__, "message": str(exc)})
+            raise

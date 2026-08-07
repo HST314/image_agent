@@ -99,6 +99,22 @@ class HistoryReopenPreviewRequest(StrictRequest):
     name: str | None = Field(default=None, min_length=2, max_length=64)
 
 
+def _trace_detail_allowed(request: Request, project_id: str) -> bool:
+    """Explicit host authorization hook; secure default is deny."""
+    authorizer = getattr(app.state, "model_call_detail_authorizer", None)
+    return bool(authorizer and authorizer(request, project_id))
+
+
+def _translate_model_call_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException): return exc
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail={"code": "MODEL_CALL_NOT_FOUND", "message": "模型调用不存在。"})
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=409, detail={"code": "MODEL_CALL_CURSOR_INVALID", "message": str(exc)})
+    return HTTPException(status_code=503, detail={"code": "MODEL_CALL_AUDIT_UNAVAILABLE",
+                                                   "message": "模型调用审计暂不可读取。"})
+
+
 @app.middleware("http")
 async def enforce_request_size(request: Request, call_next):
     """在 JSON 解析前拒绝超大请求，避免内存型拒绝服务。"""
@@ -508,6 +524,46 @@ async def project_progress(project_id: str) -> dict[str, Any]:
         return await asyncio.to_thread(progress_projection, store.root, store.events)
     except Exception as exc:
         raise _translate_observability_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/model-calls")
+async def list_model_calls(project_id: str, limit: int = Query(50, ge=1, le=100),
+                           cursor: str | None = Query(None, max_length=512)) -> dict[str, Any]:
+    """Read-only, redacted model-call summaries."""
+    try:
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file(): raise FileNotFoundError(project_id)
+        return await asyncio.to_thread(store.prompts.list_calls, limit=limit, cursor=cursor)
+    except Exception as exc:
+        raise _translate_model_call_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/model-calls/{call_id}")
+async def get_model_call(project_id: str, call_id: str, request: Request,
+                         detail: bool = False) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"call_[a-f0-9]{32}", call_id): raise FileNotFoundError(call_id)
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file(): raise FileNotFoundError(project_id)
+        if detail and not _trace_detail_allowed(request, project_id):
+            raise HTTPException(status_code=403, detail={"code": "MODEL_CALL_DETAIL_FORBIDDEN",
+                                                         "message": "无权读取模型调用详情。"})
+        value = await asyncio.to_thread(store.prompts.detail if detail else store.prompts.summary, call_id)
+        return {"view": "detail" if detail else "summary", "retention": "append_only_audit", "call": value}
+    except Exception as exc:
+        raise _translate_model_call_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/model-calls/{call_id}/text-deltas")
+async def get_model_call_deltas(project_id: str, call_id: str, after: int = Query(0, ge=0),
+                                limit: int = Query(100, ge=1, le=100)) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"call_[a-f0-9]{32}", call_id): raise FileNotFoundError(call_id)
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file(): raise FileNotFoundError(project_id)
+        return await asyncio.to_thread(store.prompts.chunks, call_id, after=after, limit=limit)
+    except Exception as exc:
+        raise _translate_model_call_error(exc) from exc
 
 
 @app.post("/api/projects/{project_id}/retry")
