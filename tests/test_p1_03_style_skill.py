@@ -12,6 +12,7 @@ from storage.project_store import ProjectStore
 
 
 STYLE_INDEX = Path("skills/style_cards/index.json")
+RELEVANT_TASK_TEXT = "编排网格 主视觉候选 编辑式动线 上下文预览 极简信号"
 
 
 def task(goal: str = "用于决策审核的结构化对比海报") -> ImageTaskCard:
@@ -26,11 +27,16 @@ def task(goal: str = "用于决策审核的结构化对比海报") -> ImageTaskC
 
 
 def test_style_skill_selects_five_indexed_distinct_entries_with_complete_explanations():
-    cards = StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text="结构化 对比 审核")
+    cards = StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text=RELEVANT_TASK_TEXT)
     assert len(cards) == 5
     assert len({card.style_index for card in cards}) == 5
     assert all(card.reference_image.sha256 for card in cards)
-    assert cards[0].style_index == "STYLE-001"
+    assert [card.style_index for card in cards] == [
+        card.style_index
+        for card in StyleCardLoader(STYLE_INDEX).select_distinct(
+            count=5, task_text=RELEVANT_TASK_TEXT
+        )
+    ]
 
     ideas = StyleIdeaGenerator(offline_mode=True).generate(
         task_card=task(),
@@ -53,7 +59,10 @@ def _isolated_library(tmp_path: Path) -> tuple[Path, dict]:
     source_ref = Path("skills/style_cards/references/composed_grid.svg")
     (tmp_path / "references/composed_grid.svg").write_bytes(source_ref.read_bytes())
     (tmp_path / "card.json").write_text(json.dumps(source_card, ensure_ascii=False), encoding="utf-8")
-    index = {"items": [{"style_id": source_card["style_id"], "path": "card.json", "priority": 1}]}
+    index = {"items": [{
+        "style_id": source_card["style_id"], "style_index": source_card["style_index"],
+        "path": "card.json", "priority": 1,
+    }]}
     index_path = tmp_path / "index.json"
     index_path.write_text(json.dumps(index), encoding="utf-8")
     return index_path, source_card
@@ -72,8 +81,8 @@ def test_style_skill_rejects_duplicate_style_index(tmp_path: Path):
     duplicate["style_id"] = "duplicate"
     (tmp_path / "duplicate.json").write_text(json.dumps(duplicate, ensure_ascii=False), encoding="utf-8")
     index_path.write_text(json.dumps({"items": [
-        {"style_id": card["style_id"], "path": "card.json"},
-        {"style_id": "duplicate", "path": "duplicate.json"},
+        {"style_id": card["style_id"], "style_index": card["style_index"], "path": "card.json"},
+        {"style_id": "duplicate", "style_index": card["style_index"], "path": "duplicate.json"},
     ]}), encoding="utf-8")
     with pytest.raises(ValueError, match="Duplicate style_index"):
         StyleCardLoader(index_path).select_distinct(count=1)
@@ -95,8 +104,25 @@ def test_style_skill_rejects_fewer_than_five_and_prohibited_match(tmp_path: Path
         StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text="要求高密度信息审核")
 
 
+def test_style_skill_rejects_unique_style_index_drift(tmp_path: Path):
+    index_path, card = _isolated_library(tmp_path)
+    card["style_index"] = "STYLE-999"
+    (tmp_path / "card.json").write_text(json.dumps(card, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="Style index identity mismatch"):
+        StyleCardLoader(index_path).select_distinct(count=1, task_text="编排网格")
+
+
+def test_style_skill_rejects_zero_relevance_and_fewer_than_five_matches():
+    with pytest.raises(ValueError, match="does not contain 5"):
+        StyleCardLoader(STYLE_INDEX).select_distinct(
+            count=5, task_text="量子发动机 深海钻井 宠物医疗"
+        )
+    with pytest.raises(ValueError, match="does not contain 5"):
+        StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text="编排网格")
+
+
 def test_generator_rejects_duplicate_selection_before_model_call():
-    cards = StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text="结构化审核")
+    cards = StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text=RELEVANT_TASK_TEXT)
 
     class PaidClient:
         def __init__(self):
@@ -118,9 +144,7 @@ def test_generator_rejects_duplicate_selection_before_model_call():
     assert client.calls == 0
 
 
-def test_invalid_style_library_blocks_render_even_when_other_skills_allow_degraded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_zero_relevance_blocks_render_even_when_other_skills_allow_degraded(tmp_path: Path):
     policy = RuntimePolicy.from_file(Path("configs/runtime.yaml")).model_copy(
         update={"skill_failure_mode": "allow_degraded"}
     )
@@ -128,10 +152,6 @@ def test_invalid_style_library_blocks_render_even_when_other_skills_allow_degrad
     store.create({"runtime_policy": policy.snapshot("offline")})
     runner = WorkflowRunner(
         store, Path("configs/model_config.yaml"), offline_mode=True, runtime_policy=policy
-    )
-    monkeypatch.setattr(
-        "skills.style_loader.StyleCardLoader.select_distinct",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("fewer than five")),
     )
     paid_calls = []
     runner._image_call = lambda *_args, **_kwargs: paid_calls.append(True)

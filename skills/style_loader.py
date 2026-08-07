@@ -39,6 +39,8 @@ class StyleCardLoader:
             card = load_style_card(card_path)
             if card.style_id != item.get("style_id"):
                 raise ValueError(f"Style index identity mismatch for {card.style_id}.")
+            if card.style_index != item.get("style_index"):
+                raise ValueError(f"Style index identity mismatch for {card.style_id}.")
             if card.style_index in seen_indexes:
                 raise ValueError(f"Duplicate style_index: {card.style_index}")
             seen_indexes.add(card.style_index)
@@ -53,10 +55,10 @@ class StyleCardLoader:
         return cards
 
     def select_distinct(self, count: int = 5, *, task_text: str = "") -> list[StyleCard]:
-        """Return approved style cards ordered by index priority.
+        """Return relevant approved style cards in deterministic rank order.
 
-        The index owns the style vocabulary and selection order. This function
-        only enforces count, approval status, and different composition values.
+        The index owns the style vocabulary and tie-break order. A card is
+        eligible only when its name, tag, or declared use appears in the task.
         """
 
         selected: list[StyleCard] = []
@@ -68,6 +70,8 @@ class StyleCardLoader:
                 continue
             hints = [card.style_name or "", *card.tags, *card.best_for]
             score = sum(1 for hint in hints if hint.lower() in normalized_task)
+            if score == 0:
+                continue
             ranked.append((-score, priority, card))
         for _, _, card in sorted(ranked, key=lambda row: (row[0], row[1], row[2].style_index)):
             if card.composition in seen_compositions:
@@ -76,4 +80,6 @@ class StyleCardLoader:
             seen_compositions.add(card.composition)
             if len(selected) == count:
                 return selected
-        raise ValueError(f"Style index does not contain {count} approved distinct style cards.")
+        raise ValueError(
+            f"Style index does not contain {count} relevant approved distinct style cards."
+        )
