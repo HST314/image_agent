@@ -136,3 +136,15 @@ def test_http_contract_lists_inspects_reopens_and_reports_conflicts(tmp_path: Pa
     missing = client.post("/api/projects/http-p2/branches/switch", json={
         "branch_id": "branch_" + "0" * 32, "checkpoint": checkpoint, "expected_version": 3})
     assert missing.status_code == 404
+
+
+def test_legacy_branch_registry_migrates_parent_relationship(tmp_path: Path):
+    store, checkpoint = _project(tmp_path, "legacy-branches")
+    atomic_json(store.root / "branches.json", {"format_version": 1, "branches": {
+        "main": {"parent": None, "from_checkpoint": None, "created_at": "2026-01-01T00:00:00Z"},
+        "old-child": {"parent": "main", "from_checkpoint": checkpoint,
+                      "created_at": "2026-01-02T00:00:00Z"}}})
+    listing = store.list_branches()
+    branches = {item["name"]: item for item in listing["items"]}
+    assert branches["old-child"]["parent_branch_id"] == branches["main"]["branch_id"]
+    assert branches["old-child"]["fork_checkpoint"] == checkpoint

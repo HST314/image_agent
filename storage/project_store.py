@@ -466,10 +466,17 @@ class ProjectStore:
         value.setdefault("version", 1)
         for name, branch in value.get("branches", {}).items():
             if "branch_id" not in branch:
+                legacy_parent = branch.get("parent")
                 branch.update(branch_id=f"branch_{content_hash({'project': self.project_id, 'name': name})[:32]}",
-                              name=name, parent_branch_id=None, fork_checkpoint=branch.pop("from_checkpoint", None),
+                              name=name, parent_branch_id=legacy_parent, fork_checkpoint=branch.pop("from_checkpoint", None),
                               created_by="legacy", head=None, status="active", version=1)
                 branch.pop("parent", None)
+                changed = True
+        by_name = value.get("branches", {})
+        for branch in by_name.values():
+            parent = branch.get("parent_branch_id")
+            if parent in by_name:
+                branch["parent_branch_id"] = by_name[parent]["branch_id"]
                 changed = True
         if changed:
             atomic_json(path, value)
