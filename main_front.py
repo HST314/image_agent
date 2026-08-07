@@ -132,6 +132,7 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
         "manifest": manifest,
         "snapshot": snapshot,
         "history": store.history(),
+        "execution_cursor": store.execution_cursor(),
         "business_status": _business_status(snapshot),
         "capabilities": _capabilities(manifest, snapshot),
     }

@@ -101,3 +101,23 @@ def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_pa
     keys = [event["idempotency_key"] for event in store.history()
             if event["type"] in {"candidate_failed", "candidate_succeeded"} and event["index"] == 2]
     assert len(set(keys)) == 1
+
+
+def test_running_cancel_stops_supplier_calls_that_have_not_started(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "cancel-slots"); store.create()
+    calls: list[int] = []
+    cancelled = False
+
+    def render(index: int):
+        nonlocal cancelled
+        calls.append(index)
+        cancelled = True
+        return {"uri": str(index), "sha256": str(index), "candidate_index": index}
+
+    result = CandidateBatchGenerator(
+        store, render, attempts=2, max_workers=1, should_cancel=lambda: cancelled
+    ).generate("confirmed-spec", count=5)
+    assert calls == [0]
+    assert len(result["succeeded"]) == 1
+    assert [failure["index"] for failure in result["failed"]] == [1, 2, 3, 4]
+    assert all(failure["cancelled"] for failure in result["failed"])

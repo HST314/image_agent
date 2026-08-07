@@ -275,3 +275,23 @@ def test_job_cancel_and_event_sequences(client: TestClient, monkeypatch) -> None
     sequences = [event["sequence"] for event in events]
     assert sequences == list(range(1, len(sequences) + 1))
     assert [event["sequence"] for event in events if event["sequence"] > sequences[-2]] == [sequences[-1]]
+
+
+def test_http_sse_resumes_after_last_event_id(client: TestClient, monkeypatch) -> None:
+    task = {"task_id":"sse", "project_id":"sse-web", "source_refs":[{"ref_id":"b","ref_type":"brief"}],
+            "deliverable_goal":"海报", "usage_context":"审核", "known_facts":{"主体":"产品"},
+            "unknowns":{}, "asset_inputs":[], "status":"draft"}
+    assert client.post("/api/projects", json={"project_id":"sse-web", "task_card":task, "offline":True}).status_code == 201
+    store = main_front._store("sse-web")
+    before = store.history()[-1]["sequence"]
+    resumed = store.events.append("resume_probe", marker="only-new-event")
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(main_front.asyncio, "sleep", no_wait)
+    response = client.get("/api/projects/sse-web/events", headers={"Last-Event-ID": str(before)})
+    assert response.status_code == 200
+    assert f"id: {resumed['sequence']}" in response.text
+    assert "only-new-event" in response.text
+    assert f"id: {before}\n" not in response.text

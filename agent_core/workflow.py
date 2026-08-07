@@ -45,6 +45,61 @@ def allowed_actions(state: str) -> tuple[str, ...]:
     except KeyError as exc:
         raise InvalidTransitionError(f"未知产品状态：{state}") from exc
 
+
+LEGACY_PHASE_STATE_MAP: dict[tuple[str, str], str] = {
+    ("intake_clarify", "waiting_clarification"): "clarifying",
+    ("intake_clarify", "clarification_completed"): "task_spec_building",
+    ("intake_clarify", "clarification_round_limit_reached"): "task_spec_building",
+    ("confirmation_build", "waiting_task_spec_confirmation"): "waiting_task_spec_confirmation",
+    ("confirmation_build", "task_spec_confirmed"): "category_analysis",
+    ("initial_candidate_generation", "waiting_master_selection"): "waiting_master_selection",
+    ("master_candidate_selection", "master_selected"): "quality_rework",
+    ("self_check_iteration", "waiting_quality_disposition"): "waiting_human_decision",
+    ("self_check_iteration", "waiting_human_approval"): "waiting_human_decision",
+    ("self_check_iteration", "waiting_final_confirmation"): "waiting_final_confirmation",
+    ("self_check_iteration", "round_checkpointed"): "quality_rework",
+    ("human_prompt_iteration", "waiting_human_rework"): "human_rework",
+    ("human_prompt_iteration", "waiting_reinspection"): "reinspection",
+    ("final_approval", "waiting_final_confirmation"): "waiting_final_confirmation",
+    ("final_approval", "delivery_frozen"): "delivery_frozen",
+}
+
+
+def project_execution_cursor(legacy_state: str, data: dict[str, object]) -> dict[str, object] | None:
+    """Project a legacy handler checkpoint onto the canonical product state.
+
+    This is deliberately pure: loading an old checkpoint never rewrites it.
+    """
+    phase = str(data.get("phase") or "")
+    product_state = LEGACY_PHASE_STATE_MAP.get((legacy_state, phase))
+    if product_state is None and legacy_state == "intake_clarify" and data.get("waiting") is False:
+        product_state = "task_spec_building"
+    if product_state is None and legacy_state == "confirmation_build" and data.get("task_spec_confirmation"):
+        product_state = "category_analysis"
+    if product_state is None and legacy_state == "initial_candidate_generation" and data.get("candidates"):
+        product_state = "waiting_master_selection"
+    if product_state is None and legacy_state == "master_candidate_selection" and data.get("master_asset"):
+        product_state = "quality_rework"
+    if product_state is None and legacy_state == "final_approval" and data.get("delivery_frozen"):
+        product_state = "delivery_frozen"
+    if product_state is None:
+        # Handler-level fallback covers old checkpoints written before `phase`
+        # became mandatory. It is conservative and never advances paid work.
+        product_state = {
+            "received": "received",
+            "intake_clarify": "clarifying",
+            "confirmation_build": "task_spec_building",
+            "initial_candidate_generation": "five_candidate_generation",
+            "master_candidate_selection": "waiting_master_selection",
+            "self_check_iteration": "quality_rework",
+            "human_prompt_iteration": "human_rework",
+            "final_approval": "waiting_final_confirmation",
+        }.get(legacy_state)
+    if product_state is None:
+        return None
+    return {"version": 1, "product_state": product_state, "handler": legacy_state,
+            "unit": phase or legacy_state}
+
 TransitionMap = dict[str, frozenset[str]]
 TRANSITIONS: TransitionMap = {
     "intake_clarify": frozenset({"confirmation_build"}),

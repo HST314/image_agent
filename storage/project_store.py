@@ -15,6 +15,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 FORMAT_VERSION = 1
+CHECKPOINT_ENVELOPE_VERSION = 2
 
 
 def _now() -> str:
@@ -51,6 +52,10 @@ class ProjectExistsError(FileExistsError):
 
 class ImmutableRecordError(FileExistsError):
     pass
+
+
+class LegacyCheckpointReadOnlyError(ValueError):
+    """A legacy checkpoint is intact but cannot safely drive execution."""
 
 
 class EventStore:
@@ -191,8 +196,17 @@ class CheckpointStore:
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def save(self, branch: str, sequence: int, state: str, data: dict[str, Any]) -> tuple[str, str]:
-        envelope = {"format_version": FORMAT_VERSION, "branch": branch, "sequence": sequence, "state": state, "data": data}
+    def save(self, branch: str, sequence: int, state: str, data: dict[str, Any],
+             *, execution_cursor: dict[str, Any] | None = None) -> tuple[str, str]:
+        if execution_cursor is None:
+            from agent_core.workflow import project_execution_cursor
+            execution_cursor = project_execution_cursor(state, data)
+        if execution_cursor is None:
+            raise LegacyCheckpointReadOnlyError(f"状态 {state!r} 无法映射到版本化执行游标；仅允许审计读取。")
+        envelope = {"format_version": FORMAT_VERSION, "checkpoint_envelope_version": CHECKPOINT_ENVELOPE_VERSION,
+                    "branch": branch, "sequence": sequence, "state": state,
+                    "execution_cursor": execution_cursor,
+                    "compatibility_projection": {"state": state, "phase": data.get("phase")}, "data": data}
         envelope["checksum"] = content_hash(envelope)
         relative = f"checkpoints/{branch}/{sequence:06d}-{state}.json"
         path = self.root / relative
@@ -206,6 +220,15 @@ class CheckpointStore:
         checksum = envelope.pop("checksum", None)
         if envelope.get("format_version") != FORMAT_VERSION or checksum != content_hash(envelope):
             raise CorruptProjectError("检查点版本或完整性校验失败。")
+        version = envelope.get("checkpoint_envelope_version")
+        if version is None:
+            from agent_core.workflow import project_execution_cursor
+            cursor = project_execution_cursor(str(envelope.get("state") or ""), envelope.get("data") or {})
+            envelope["checkpoint_envelope_version"] = 1
+            envelope["execution_cursor"] = cursor
+            envelope["legacy_read_only"] = cursor is None
+        elif version != CHECKPOINT_ENVELOPE_VERSION:
+            raise CorruptProjectError("检查点 envelope 版本不受支持。")
         envelope["checksum"] = checksum
         return envelope
 
@@ -359,6 +382,12 @@ class ProjectStore:
             return
         pending = json.loads(pending_path.read_text(encoding="utf-8"))
         pointer = pending["pointer"]
+        checkpoint_path = self.root / pointer["path"]
+        if not checkpoint_path.exists():
+            # Intent was durable but the immutable record was never installed;
+            # no event/manifest may point at it, so rollback is safe.
+            pending_path.unlink()
+            return
         # The immutable checkpoint must exist and validate before it can become visible.
         envelope = self.checkpoints.load(pointer["path"])
         if envelope["checksum"] != pointer["checksum"]:
@@ -388,13 +417,20 @@ class ProjectStore:
         transaction_id = uuid4().hex
         # Write-ahead intent makes the three-file logical commit crash-recoverable.
         pending_path = self.root / "runtime/checkpoint-commit.json"
-        expected = {"format_version": FORMAT_VERSION, "branch": active, "sequence": sequence, "state": state, "data": data}
+        from agent_core.workflow import project_execution_cursor
+        cursor = project_execution_cursor(state, data)
+        if cursor is None:
+            raise LegacyCheckpointReadOnlyError(f"状态 {state!r} 无法映射到版本化执行游标；拒绝写入。")
+        expected = {"format_version": FORMAT_VERSION, "checkpoint_envelope_version": CHECKPOINT_ENVELOPE_VERSION,
+                    "branch": active, "sequence": sequence, "state": state,
+                    "execution_cursor": cursor,
+                    "compatibility_projection": {"state": state, "phase": data.get("phase")}, "data": data}
         checksum = content_hash(expected)
         pointer = {"path": relative, "checksum": checksum, "branch": active, "sequence": sequence, "state": state}
         updated_at = _now()
         atomic_json(pending_path, {"format_version": FORMAT_VERSION, "transaction_id": transaction_id,
                                    "pointer": pointer, "updated_at": updated_at})
-        self.checkpoints.save(active, sequence, state, data)
+        self.checkpoints.save(active, sequence, state, data, execution_cursor=cursor)
         self._recover_checkpoint_commit()
         return relative
 
@@ -410,7 +446,19 @@ class ProjectStore:
 
     def resume(self) -> dict[str, Any] | None:
         pointer = self.manifest().get("current_checkpoint")
-        return self.checkpoints.load(pointer["path"])["data"] if pointer else None
+        if not pointer:
+            return None
+        checkpoint = self.checkpoints.load(pointer["path"])
+        if checkpoint.get("legacy_read_only"):
+            raise LegacyCheckpointReadOnlyError("旧 checkpoint 状态不可安全映射；工程仅允许 inspect/history，禁止 resume/retry/branch。")
+        return checkpoint["data"]
+
+    def execution_cursor(self) -> dict[str, Any] | None:
+        """Return the canonical cursor without leaking it into legacy snapshot data."""
+        pointer = self.manifest().get("current_checkpoint")
+        if not pointer:
+            return None
+        return self.checkpoints.load(pointer["path"]).get("execution_cursor")
 
     def retry(self, execute: Any, *, name: str | None = None) -> Any:
         manifest = self.manifest()
@@ -426,6 +474,8 @@ class ProjectStore:
 
     def branch_from(self, checkpoint: str, *, name: str | None = None) -> str:
         source = self.checkpoints.load(checkpoint)
+        if source.get("legacy_read_only"):
+            raise LegacyCheckpointReadOnlyError("旧 checkpoint 状态不可安全映射；禁止从只读记录创建执行分支。")
         branches_path = self.root / "branches.json"
         branches = json.loads(branches_path.read_text(encoding="utf-8"))
         branch = name or f"branch-{uuid4().hex[:8]}"

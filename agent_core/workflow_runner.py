@@ -11,7 +11,7 @@ from agent_core.batch import CandidateBatchGenerator
 from agent_core.models import ImageTaskCard, ModelRole, StyleIdeaCard, TaskSpecification, VisualCheckResult, VisualInspectionOutput
 from agent_core.structured_output import RecoverableStructuredOutputError, validate_with_one_repair
 from agent_core.state_machine import RecoverableWorkflow
-from agent_core.workflow import TRANSITIONS, SelfCheckPolicy, validate_transition
+from agent_core.workflow import STATE_DEFINITIONS, TRANSITIONS, SelfCheckPolicy, validate_transition
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
 from interaction.confirmation_builder import specification_from_task, specification_to_markdown, update_specification_from_markdown
 from interaction.question_generator import generate_question_card
@@ -127,6 +127,16 @@ class WorkflowRunner:
 
     ORDER = ("intake_clarify", "confirmation_build", "initial_candidate_generation",
              "master_candidate_selection", "self_check_iteration", "human_prompt_iteration", "final_approval")
+    CURSOR_HANDLERS = {
+        "received": "intake_clarify", "clarifying": "intake_clarify",
+        "task_spec_building": "confirmation_build", "waiting_task_spec_confirmation": "confirmation_build",
+        "category_analysis": "initial_candidate_generation", "style_selection_vlm": "initial_candidate_generation",
+        "five_candidate_generation": "initial_candidate_generation",
+        "waiting_master_selection": "master_candidate_selection",
+        "quality_rework": "self_check_iteration", "waiting_human_decision": "self_check_iteration",
+        "human_rework": "human_prompt_iteration", "reinspection": "self_check_iteration",
+        "waiting_final_confirmation": "final_approval", "delivery_frozen": "final_approval",
+    }
 
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  runtime_policy: RuntimePolicy | None = None,
@@ -153,6 +163,17 @@ class WorkflowRunner:
 
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
+        cursor = self.store.execution_cursor()
+        if cursor:
+            if str(snapshot.get("state")) != str(cursor.get("handler")):
+                raise ValueError("检查点执行游标与兼容 state 投影不一致，拒绝执行。")
+            product_state = str(cursor.get("product_state"))
+            if product_state == "delivery_frozen":
+                raise ValueError("工程已经完成最终确认。")
+            try:
+                return self.CURSOR_HANDLERS[product_state]
+            except KeyError as exc:
+                raise ValueError(f"产品状态 {product_state!r} 没有可执行处理器。") from exc
         if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection", "waiting_quality_disposition"}:
             return str(snapshot.get("state"))
         if snapshot.get("phase") == "waiting_human_rework":
@@ -171,6 +192,16 @@ class WorkflowRunner:
 
     def _run_locked(self, snapshot: dict[str, Any] | None, options: RunnerOptions, *, only_state: str | None = None) -> dict[str, Any]:
         data = dict(snapshot or {}); target = only_state or self.next_state(snapshot)
+        cursor = self.store.execution_cursor()
+        # Normal resume is cursor-driven. `only_state` is the established retry
+        # adapter and remains compatible with explicit snapshots supplied by it.
+        if cursor and snapshot is not None and only_state is None:
+            product_state = str(cursor["product_state"])
+            if product_state not in STATE_DEFINITIONS:
+                raise ValueError("检查点执行游标引用未知产品状态。")
+            cursor_handler = str(cursor["handler"])
+            if str(snapshot.get("state") or "") != cursor_handler:
+                raise ValueError("检查点执行游标与兼容 state 投影不一致，拒绝执行。")
         while True:
             current = str(data.get("state", ""))
             if current and current != target:
