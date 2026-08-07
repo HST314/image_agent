@@ -173,7 +173,9 @@ def _business_status(snapshot: dict[str, Any]) -> str:
 def _job_store(project_id: str) -> JobStore:
     store = _store(project_id)
     store.manifest()
-    return JobStore(store.root)
+    snapshot = store.runtime_snapshot()
+    policy = RuntimePolicy.model_validate(snapshot["policy"])
+    return JobStore(store.root, max_attempts=policy.max_render_retries + 1)
 
 
 def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
@@ -202,8 +204,9 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
         finished = jobs.finish(job["job_id"])
         store.events.append("job_finished", job_id=job["job_id"], status=finished["status"])
     except Exception as exc:
-        finished = jobs.finish(job["job_id"], error={"code": type(exc).__name__, "message": str(exc),
-                                                        "retryable": not isinstance(exc, (ValueError, TypeError))})
+        from agent_core.error_taxonomy import error_record
+        stage = str((store.execution_cursor() or {}).get("handler") or "workflow")
+        finished = jobs.finish(job["job_id"], error=error_record(exc, stage=stage))
         store.events.append("job_finished", job_id=job["job_id"], status=finished["status"], error=finished.get("error"))
 
 

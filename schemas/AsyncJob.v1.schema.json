@@ -10,6 +10,7 @@
     "status": {"enum": ["queued", "running", "succeeded", "failed", "cancel_requested", "cancelled"]},
     "cancel_requested": {"type": "boolean"},
     "attempt": {"type": "integer", "minimum": 0},
+    "max_attempts": {"type": "integer", "minimum": 1},
     "progress": {
       "type": "object",
       "required": ["completed", "total", "unit"],
@@ -23,7 +24,27 @@
     "heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
     "created_at": {"type": "string", "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
-    "error": {"type": ["object", "null"]}
+    "error": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["code", "stage", "retryable", "suggested_action", "trace_id", "detail"],
+          "properties": {
+            "code": {"enum": ["UPSTREAM_TIMEOUT", "RATE_LIMITED", "AUTHENTICATION_FAILED", "CONTENT_REJECTED", "PROVIDER_UNAVAILABLE", "ASSET_INGESTION_FAILED", "STRUCTURED_OUTPUT_INVALID", "INVALID_INPUT", "CONFIGURATION_OR_SKILL", "CANCELLED", "INTERNAL_ERROR"]},
+            "stage": {"type": "string", "minLength": 1},
+            "candidate_slot": {"type": "integer", "minimum": 0},
+            "rework_round": {"type": "integer", "minimum": 1},
+            "retryable": {"type": "boolean"},
+            "suggested_action": {"enum": ["retry", "modify_input", "contact_admin", "human_decision", "none"]},
+            "trace_id": {"type": "string", "pattern": "^trace_[a-f0-9]{32}$"},
+            "detail": {"type": "string", "maxLength": 513},
+            "retry_after_seconds": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
   },
   "additionalProperties": true
 }

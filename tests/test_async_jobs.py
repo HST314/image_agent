@@ -80,6 +80,19 @@ def test_legacy_job_is_migrated_under_lock(tmp_path: Path) -> None:
     assert migrated["heartbeat_at"] is None and migrated["attempt"] == 0
 
 
+def test_legacy_job_error_is_migrated_to_stable_contract(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "legacy-error-job"); store.create()
+    jobs = JobStore(store.root)
+    job, _ = jobs.create("legacy-error-key", {"x": 1})
+    jobs.claim(job["job_id"])
+    jobs.finish(job["job_id"], error={"code": "Timeout", "message": "old timeout", "retryable": True})
+    migrated = JobStore(store.root).get(job["job_id"])
+    assert migrated["error"]["stage"] == "workflow"
+    assert migrated["error"]["retryable"] is True
+    schema = json.loads(Path("schemas/AsyncJob.v1.schema.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(migrated)
+
+
 def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "slots")
     store.create()

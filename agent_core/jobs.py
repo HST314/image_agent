@@ -12,6 +12,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from storage.project_store import atomic_json, content_hash
+from agent_core.error_taxonomy import error_record
 
 
 def _now() -> str:
@@ -33,9 +34,12 @@ def _owner_alive(record: dict[str, Any]) -> bool:
 class JobStore:
     """Atomic per-project registry; idempotency keys are immutable bindings."""
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(self, project_root: Path, *, max_attempts: int = 3) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts 必须至少为 1。")
         self.path = project_root / "runtime/jobs.json"
         self.lock_path = project_root / "runtime/jobs.lock"
+        self.max_attempts = max_attempts
 
     def _locked(self, mutate: Callable[[dict[str, Any]], Any]) -> Any:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +55,14 @@ class JobStore:
                 job.setdefault("progress", {"completed": 0, "total": 1, "unit": "workflow"})
                 job.setdefault("heartbeat_at", None)
                 job.setdefault("attempt", 0)
+                job.setdefault("max_attempts", self.max_attempts)
+                legacy_error = job.get("error")
+                if legacy_error and "stage" not in legacy_error:
+                    message = legacy_error.get("message") or legacy_error.get("code") or "legacy job failure"
+                    normalized = error_record(RuntimeError(message), stage="workflow")
+                    normalized["retryable"] = bool(legacy_error.get("retryable", normalized["retryable"]))
+                    normalized["suggested_action"] = "retry" if normalized["retryable"] else "contact_admin"
+                    job["error"] = normalized
             result = mutate(data)
             atomic_json(self.path, data)
             return result
@@ -65,14 +77,17 @@ class JobStore:
                 if job["idempotency_key"] == idempotency_key:
                     if job["payload_hash"] != payload_hash:
                         raise ValueError("同一作业幂等键不能提交不同参数。")
-                    if job["status"] == "failed" and bool((job.get("error") or {}).get("retryable", True)):
+                    if (job["status"] == "failed"
+                            and bool((job.get("error") or {}).get("retryable", True))
+                            and int(job.get("attempt", 0)) < self.max_attempts):
                         job.update(status="queued", error=None, updated_at=_now())
                     return dict(job), False
             job_id = f"job_{uuid4().hex}"
             job = {"job_id": job_id, "idempotency_key": idempotency_key, "payload_hash": payload_hash,
                    "payload": payload, "status": "queued", "cancel_requested": False,
                    "progress": {"completed": 0, "total": 1, "unit": "workflow"},
-                   "heartbeat_at": None, "created_at": _now(), "updated_at": _now(), "attempt": 0}
+                   "heartbeat_at": None, "created_at": _now(), "updated_at": _now(), "attempt": 0,
+                   "max_attempts": self.max_attempts}
             data["jobs"][job_id] = job
             return dict(job), True
         return self._locked(mutate)

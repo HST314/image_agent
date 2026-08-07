@@ -172,3 +172,9 @@ python3 -m pytest -q
 最终确认冻结后，调用 `POST /api/projects/{project_id}/delivery/generate` 独立生成简短说明和不可变、版本化的 `DesignDeliveryEnvelope 1.1`。说明严格由已确认任务书、最终采用风格/选择理由及最终资产质检事实组成；失败仅记录可重试失败事件，不修改冻结资产或确认事实。
 
 `GET /api/projects/{project_id}/delivery` 只读取独立 Delivery 记录，不依赖 checkpoint，返回稳定资产 URI、真实 SHA-256、格式、尺寸、确认及 trace 引用。`POST /api/projects/{project_id}/delivery/return` 接受 `delivery_version`、`actor`、`target`、`idempotency_key`，只记录显式人工回传事实，不发送通知、轮询或 Webhook。同版本重复回传幂等；资产或说明变化生成新版本，并重新校验任务书、质检和最终确认哈希门禁。
+
+## P1-10 错误与恢复契约（服务端）
+
+作业与失败 checkpoint 使用同一错误对象：`code`、`stage`、可选 `candidate_slot`/`rework_round`、`retryable`、`suggested_action`、`trace_id`、脱敏 `detail`，限流时另含 `retry_after_seconds`。稳定 code 为 `UPSTREAM_TIMEOUT`、`RATE_LIMITED`、`AUTHENTICATION_FAILED`、`CONTENT_REJECTED`、`PROVIDER_UNAVAILABLE`、`ASSET_INGESTION_FAILED`、`STRUCTURED_OUTPUT_INVALID`、`INVALID_INPUT`、`CONFIGURATION_OR_SKILL`、`CANCELLED`、`INTERNAL_ERROR`。前端只需按 `suggested_action` 映射重试、修改输入、联系管理员或人工决策。
+
+HTTP 请求校验仍返回 422；异步执行错误保存在 `AsyncJob.error`，job 状态为 `failed`；协作取消为 `cancel_requested → cancelled`，不伪装失败。所有 `waiting_*` 是成功 checkpoint，既无 error 也无 retry 语义。重试次数、指数退避基数/上限和超时来自项目创建时冻结的 RuntimePolicy；429 尊重 `Retry-After`，401、内容政策及输入错误不会盲重试。候选槽位以既有稳定幂等键记录成功边界，重试或 worker 重启只补尚未成功的槽位。

@@ -42,6 +42,8 @@ class RuntimePolicy(BaseModel):
     approval_required: bool
     max_render_retries: int = Field(ge=0, le=10)
     max_calibration_retries: int = Field(ge=0, le=20)
+    retry_base_delay_seconds: float = Field(default=0.1, ge=0, le=60)
+    retry_max_delay_seconds: float = Field(default=30, gt=0, le=3600)
     model_timeout_seconds: float = Field(default=180, gt=0, le=3600)
     image_api_base_url: str
     default_output_size: str = Field(pattern=r"^\d{2,5}x\d{2,5}$")
@@ -57,6 +59,8 @@ class RuntimePolicy(BaseModel):
             raise ValueError("question_mode=manual 时 max_auto_questions 必须为 0")
         if not self.approval_required:
             raise ValueError("approval_required=false 与任务书及最终确认强制门禁冲突")
+        if self.retry_base_delay_seconds > self.retry_max_delay_seconds:
+            raise ValueError("retry_base_delay_seconds 不能大于 retry_max_delay_seconds")
         if self.image_api_base_url:
             parsed = urlparse(self.image_api_base_url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:

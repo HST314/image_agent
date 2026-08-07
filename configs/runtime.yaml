@@ -17,6 +17,8 @@ self_check:
 approval_required: true
 max_render_retries: 2
 max_calibration_retries: 3
+retry_base_delay_seconds: 0.1
+retry_max_delay_seconds: 30
 model_timeout_seconds: 180
 image_api_base_url: ""
 default_output_size: "1024x1024"

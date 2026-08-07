@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 from storage.project_store import ProjectStore, content_hash
+from agent_core.error_taxonomy import error_record
 
 class CandidateBatchGenerator:
     def __init__(self, store: ProjectStore, render: Callable[[int], dict[str, Any]], *, attempts: int = 2, max_workers: int = 5,
@@ -38,8 +39,12 @@ class CandidateBatchGenerator:
                         self.store.events.append("candidate_succeeded", index=index, attempt=attempt, asset=asset, idempotency_key=key)
                         return asset, None
                     except Exception as exc:
-                        error = exc; self.store.events.append("candidate_failed", index=index, attempt=attempt, error={"code": type(exc).__name__, "message": str(exc)}, idempotency_key=key)
-                return None, {"index": index, "error": str(error), "idempotency_key": key}
+                        error = exc
+                        record = error_record(exc, stage="five_candidate_generation", slot=index)
+                        self.store.events.append("candidate_failed", index=index, attempt=attempt, error=record, idempotency_key=key)
+                        if not record["retryable"]:
+                            break
+                return None, {"index": index, "error": error_record(error or RuntimeError("unknown"), stage="five_candidate_generation", slot=index), "idempotency_key": key}
 
             with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="candidate") as pool:
                 futures = {pool.submit(one, index, key): index for index, key in pending}

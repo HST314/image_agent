@@ -141,7 +141,10 @@ class WorkflowRunner:
         self.store = store
         self.policy = runtime_policy or RuntimePolicy.from_file(Path("configs/runtime.yaml"))
         self.store.assert_runtime_mode("offline" if offline_mode else "real")
-        executor = ModelExecutor(max_attempts=self.policy.max_render_retries + 1, timeout=self.policy.model_timeout_seconds)
+        executor = ModelExecutor(max_attempts=self.policy.max_render_retries + 1,
+                                 base_delay=self.policy.retry_base_delay_seconds,
+                                 max_delay=self.policy.retry_max_delay_seconds,
+                                 timeout=self.policy.model_timeout_seconds)
         self.gateway = RuntimeModelGateway(store, ModelRouter.from_file(config), executor=executor, offline_mode=offline_mode)
         self.offline_mode = offline_mode
         self.output = output or (lambda _: None)
@@ -211,7 +214,9 @@ class WorkflowRunner:
                 # Waiting is a successful recoverable boundary, not a failed state.
                 self.store.checkpoint(target, data)
             except Exception as exc:
-                self.store.fail_step(target, {"code": type(exc).__name__, "message": str(exc), "retryable": True})
+                from agent_core.error_taxonomy import error_record
+                self.store.fail_step(target, error_record(exc, stage=target,
+                    rework_round=int(data.get("round", data.get("self_check_round", 0))) or None))
                 raise
             if only_state or data.get("waiting") or target == "final_approval": return data
             target = self.next_state(data)
