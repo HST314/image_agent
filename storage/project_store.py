@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import shutil
+import threading
+import fcntl
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,16 +54,28 @@ class ImmutableRecordError(FileExistsError):
 
 
 class EventStore:
+    _guards: dict[str, threading.Lock] = {}
+    _guards_guard = threading.Lock()
     def __init__(self, path: Path) -> None:
         self.path = path
 
     def append(self, event_type: str, **payload: Any) -> dict[str, Any]:
         event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex, "timestamp": _now(), "type": event_type, **payload}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        key = str(self.path.resolve())
+        with self._guards_guard:
+            guard = self._guards.setdefault(key, threading.Lock())
+        encoded = (json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode()
+        with guard:
+            descriptor = os.open(self.path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                if os.write(descriptor, encoded) != len(encoded):
+                    raise OSError("事件日志写入不完整")
+                os.fsync(descriptor)
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
         return event
 
     def read_all(self) -> list[dict[str, Any]]:
@@ -205,6 +219,9 @@ class ProjectStore:
         self.artifacts = ArtifactStore(self.root / "artifacts")
         self.checkpoints = CheckpointStore(self.root)
         self._lock_depth = 0
+        self._lock_owner: int | None = None
+        self._lock_guard = threading.RLock()
+        self._lock_descriptor: int | None = None
 
     def create(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         if self.root.exists() and any(self.root.iterdir()):
@@ -212,10 +229,24 @@ class ProjectStore:
         self.root.mkdir(parents=True, exist_ok=False)
         manifest = {"format_version": FORMAT_VERSION, "project_id": self.project_id, "current_branch": "main", "current_checkpoint": None, "failed_step": None, "created_at": _now(), "updated_at": _now()}
         atomic_json(self.root / "manifest.json", manifest)
-        atomic_json(self.root / "project.yaml", config or {})
+        if config is None:
+            from configs.runtime_policy import RuntimePolicy
+            config = {"runtime_policy": RuntimePolicy.from_file(Path("configs/runtime.yaml")).snapshot("offline")}
+        atomic_json(self.root / "project.yaml", config)
         atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "branches": {"main": {"parent": None, "from_checkpoint": None, "created_at": _now()}}})
         self.events.append("project_created", branch="main")
         return manifest
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        value = json.loads((self.root / "project.yaml").read_text(encoding="utf-8"))
+        if not value.get("runtime_policy"):
+            raise CorruptProjectError("工程缺少运行策略快照。")
+        return value["runtime_policy"]
+
+    def assert_runtime_mode(self, mode: str) -> None:
+        configured = self.runtime_snapshot().get("mode")
+        if configured != mode:
+            raise ValueError(f"工程运行模式已固化为 {configured}，不能切换为 {mode}。")
 
     def manifest(self) -> dict[str, Any]:
         data = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
@@ -284,7 +315,8 @@ class ProjectStore:
     def lock(self) -> Iterator[None]:
         # The runner owns the project transaction. Helpers such as the candidate
         # batch may enter it again on the same store instance without deadlock.
-        if self._lock_depth:
+        owner = threading.get_ident()
+        if self._lock_depth and self._lock_owner == owner:
             self._lock_depth += 1
             try:
                 yield
@@ -292,21 +324,39 @@ class ProjectStore:
                 self._lock_depth -= 1
             return
         lock_path = self.root / ".lock"
-        try:
-            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(descriptor, str(os.getpid()).encode())
-            os.close(descriptor)
-        except FileExistsError as exc:
-            raise ProjectLockError("该工程正在由另一个进程处理，请稍后重试。") from exc
+        with self._lock_guard:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                os.close(descriptor)
+                raise ProjectLockError("该工程正在由另一个进程处理，请稍后重试。") from exc
+            info = {"pid": os.getpid(), "process_start": _process_start_time(os.getpid()), "thread_id": owner, "acquired_at": _now()}
+            os.ftruncate(descriptor, 0)
+            os.write(descriptor, _canonical(info))
+            os.fsync(descriptor)
+            self._lock_descriptor = descriptor
         try:
             self._lock_depth = 1
+            self._lock_owner = owner
             yield
         finally:
             self._lock_depth = 0
-            lock_path.unlink(missing_ok=True)
-
+            self._lock_owner = None
+            descriptor = self._lock_descriptor
+            self._lock_descriptor = None
+            if descriptor is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
     def idempotency_key(self, state: str, checkpoint_hash: str, prompt_hash: str, model_hash: str, reference_hash: str = "") -> str:
         return content_hash([state, checkpoint_hash, prompt_hash, model_hash, reference_hash])
 
     def history(self) -> list[dict[str, Any]]:
         return self.events.read_all()
+
+
+def _process_start_time(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split()[21]
+    except (OSError, IndexError):
+        return "unknown"

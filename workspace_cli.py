@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
+from configs.runtime_policy import RuntimePolicy
 from calibrator.calibration_loop import ManualAction
 from interaction.presenter import Presenter
 from storage.project_store import ProjectStore
@@ -64,7 +65,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     view = Presenter(args.debug)
     try:
         if args.command == "new":
-            task = json.loads(args.task.read_text(encoding="utf-8")); store.create()
+            task = json.loads(args.task.read_text(encoding="utf-8"))
+            policy = RuntimePolicy.from_file(Path("configs/runtime.yaml"))
+            store.create({"runtime_policy": policy.snapshot("offline" if args.offline else "real")})
             with store.lock():
                 runner = WorkflowRunner(store, args.model_config, offline_mode=args.offline, output=print)
                 result = runner.run({"task_card": task}, _options(args))
