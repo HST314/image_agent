@@ -128,6 +128,8 @@ python3 main.py --projects-root ./projects --debug inspect demo
 
 五图生成前会对五张风格理解卡执行结构化门禁：`style_index` 必须唯一，构图、材质、光影、叙事与图形语言字段必须完整，五维机制签名不得重复。每个槽位的幂等键绑定任务书哈希、槽位序号与 `style_index`；成功槽位从事件记录复用，部分失败重试只补失败槽位，不会把不足五种机制的结果标记为完成。五个 Prompt 共用同一份内容、品牌、空间和合规硬约束。
 
+风格理解与视觉质检分别使用 `StyleUnderstandingOutput`、`VisualInspectionOutput` 严格 Schema。首次 JSON 解析或字段校验失败时，系统把校验错误与脱敏原响应交给同一 VLM 做一次定向修复；第二次仍失败会记录 `structured_output_recovery_required`（`retryable=true`）并停止后续生图/返工。系统不会补造缺失字段、置信度或默认“通过”；恢复时沿用既有 job、任务书哈希和候选槽位幂等语义。
+
 兼容说明：旧自定义风格卡必须补齐 `summary`、非空 `tags`、`best_for`、`avoid_for`、`risk_notes` 和受控 `reference_image` 后才能被新版加载器接受；仓库内置目录不需要迁移脚本。
 
 ### `configs/runtime.yaml`

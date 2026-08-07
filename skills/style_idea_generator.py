@@ -8,7 +8,8 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-from agent_core.models import ImageTaskCard, StyleCard, StyleIdeaCard, TaskConfirmationDoc
+from agent_core.models import ImageTaskCard, StyleCard, StyleIdeaCard, StyleUnderstandingOutput, TaskConfirmationDoc
+from agent_core.structured_output import RecoverableStructuredOutputError, validate_with_one_repair
 from model_router.clients import VisionLanguageModelClient
 
 
@@ -16,11 +17,13 @@ class StyleIdeaGenerator:
     """Create human-readable style direction cards before image rendering."""
 
     def __init__(self, client: VisionLanguageModelClient | None = None, model_name: str | None = None, *, offline_mode: bool = False,
-                 reference_root: Path | None = None) -> None:
+                 reference_root: Path | None = None,
+                 failure_recorder: Any | None = None) -> None:
         self.client = client
         self.offline_mode = offline_mode
         self.model_name = model_name or ("offline_style_builder" if offline_mode else "style_vlm")
         self.reference_root = (reference_root or Path(__file__).parent / "style_cards").resolve()
+        self.failure_recorder = failure_recorder
 
     def generate(
         self,
@@ -59,12 +62,20 @@ class StyleIdeaGenerator:
 
         reference_asset = style_card.reference_image.path
         if self.client is not None and reference_asset:
+            image = self._reference_data_uri(style_card)
             try:
-                payload = self.client.inspect(
-                    self._reference_data_uri(style_card),
-                    self._prompt(task_card, confirmation_doc, style_card),
+                parsed = validate_with_one_repair(
+                    output_kind="style_understanding",
+                    model=StyleUnderstandingOutput,
+                    invoke=lambda prompt: self.client.inspect(image, prompt),
+                    prompt=self._prompt(task_card, confirmation_doc, style_card),
+                    schema=StyleUnderstandingOutput.model_json_schema(),
+                    expected_values={"style_index": style_card.style_index},
+                    on_failure=self.failure_recorder,
                 )
-                return self._from_payload(task_card, style_card, reference_asset, payload)
+                return self._from_payload(task_card, style_card, reference_asset, parsed.model_dump())
+            except RecoverableStructuredOutputError:
+                raise
             except Exception as exc:
                 raise RuntimeError(
                     f"风格 VLM 调用、style_index 绑定或固定结构输出失败（{style_card.style_index}）。"

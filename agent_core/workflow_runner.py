@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent_core.batch import CandidateBatchGenerator
-from agent_core.models import ImageTaskCard, ModelRole, StyleIdeaCard, TaskSpecification, VisualCheckResult
+from agent_core.models import ImageTaskCard, ModelRole, StyleIdeaCard, TaskSpecification, VisualCheckResult, VisualInspectionOutput
+from agent_core.structured_output import RecoverableStructuredOutputError, validate_with_one_repair
 from agent_core.state_machine import RecoverableWorkflow
 from agent_core.workflow import TRANSITIONS, SelfCheckPolicy, validate_transition
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
@@ -291,6 +292,7 @@ class WorkflowRunner:
         idea_cards = StyleIdeaGenerator(
             client=None if self.offline_mode else _RunnerStyleVLMClient(self),
             offline_mode=self.offline_mode,
+            failure_recorder=self._record_structured_output_failure,
         ).generate(
             task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=self.policy.candidate_count
         )
@@ -430,10 +432,22 @@ class WorkflowRunner:
                 f"设计任务书要求：\n{prompt}"
             )
             
-            return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
-                lambda route: self._vlm(route).inspect(image_uri, inspection_prompt), 
-                messages=[{"role":"user","content":inspection_prompt},{"role":"image","content":image_uri}],
-                variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
+            def invoke(current_prompt: str) -> Any:
+                return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
+                    lambda route: self._vlm(route).inspect(image_uri, current_prompt),
+                    messages=[{"role":"user","content":current_prompt},{"role":"image","content":image_uri}],
+                    variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
+            return validate_with_one_repair(
+                output_kind="visual_inspection", model=VisualInspectionOutput, invoke=invoke,
+                prompt=inspection_prompt, schema=VisualInspectionOutput.model_json_schema(),
+                on_failure=self._record_structured_output_failure,
+            ).model_dump()
+
+    def _record_structured_output_failure(self, error: RecoverableStructuredOutputError) -> None:
+        self.store.events.append(
+            "structured_output_recovery_required", output_kind=error.output_kind,
+            validation_error=error.validation_error, raw_output=error.redacted_output, retryable=True,
+        )
 
     def _vlm(self, route: ModelRoute):
         client = build_vlm_client(route.binding)
