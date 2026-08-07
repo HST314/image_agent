@@ -309,14 +309,16 @@ class StyleIdeaCard(StrictBaseModel):
     task_id: str
     source_style_id: str
     style_index: str
-    title: str
-    composition: str
-    material: str
-    fit_reason: str
-    artistic_philosophy: str
-    adaptable_mechanism: str
-    major_risk: str
-    prompt_supplement: str
+    style_summary: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    composition: str = Field(min_length=1)
+    material: str = Field(min_length=1)
+    fit_reason: str = Field(min_length=1)
+    artistic_philosophy: str = Field(min_length=1)
+    adaptable_mechanism: str = Field(min_length=1)
+    prohibited_copy_elements: list[str] = Field(min_length=1)
+    major_risk: str = Field(min_length=1)
+    prompt_supplement: str = Field(min_length=1)
     reference_asset: str | None = None
     generated_by: str = "mock_style_vlm"
     created_at: datetime = Field(default_factory=utc_now)

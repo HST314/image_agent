@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent_core.batch import CandidateBatchGenerator
-from agent_core.models import ImageTaskCard, ModelRole, TaskSpecification, VisualCheckResult
+from agent_core.models import ImageTaskCard, ModelRole, StyleIdeaCard, TaskSpecification, VisualCheckResult
 from agent_core.state_machine import RecoverableWorkflow
 from agent_core.workflow import TRANSITIONS, SelfCheckPolicy, validate_transition
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
@@ -30,6 +30,60 @@ class SkillLoadError(RuntimeError):
     """A required external skill could not be loaded safely."""
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+
+
+def build_style_candidate_prompt(
+    idea: StyleIdeaCard, hard_constraints: dict[str, Any], category_description: str
+) -> str:
+    """Build a text-only style prompt; controlled reference assets never cross this boundary."""
+
+    style_text = {
+        "style_index": idea.style_index,
+        "style_summary": idea.style_summary,
+        "composition": idea.composition,
+        "material": idea.material,
+        "artistic_philosophy": idea.artistic_philosophy,
+        "adaptable_mechanism": idea.adaptable_mechanism,
+        "task_fit": idea.fit_reason,
+        "prohibited_copy_elements": idea.prohibited_copy_elements,
+        "major_risk": idea.major_risk,
+        "prompt_supplement": idea.prompt_supplement,
+    }
+    return (
+        "商业效果图绘制。硬约束优先级高于风格软约束。\n"
+        f"【内容/品牌/空间/合规硬约束（不得改写）】\n{json.dumps(hard_constraints, ensure_ascii=False, sort_keys=True)}\n"
+        f"【品类硬约束】\n{category_description}\n"
+        f"【对应风格的结构化文字（仅作为软约束）】\n{json.dumps(style_text, ensure_ascii=False, sort_keys=True)}\n"
+        "只借鉴抽象视觉语言；不得复制参考图的主体、构图、文字、标识或任何独特表达。"
+        "不得推断、请求或传递参考图字节、文件路径或 URI。"
+    )
+
+
+def _task_hard_constraints(task_card: ImageTaskCard, spec: TaskSpecification) -> dict[str, Any]:
+    facts = {fact.label: fact.value for fact in spec.facts}
+    facts.update({str(key): value for key, value in task_card.known_facts.items()})
+
+    def matching(*terms: str) -> dict[str, Any]:
+        return {key: value for key, value in facts.items() if any(term in key.lower() for term in terms)}
+
+    return {
+        "content": {
+            "deliverable_goal": task_card.deliverable_goal,
+            "usage_context": task_card.usage_context,
+            "confirmed_specification": specification_to_markdown(spec),
+        },
+        "brand": matching("品牌", "brand"),
+        "space": matching("空间", "尺寸", "版式", "space", "size", "layout"),
+        "compliance": matching("合规", "禁止", "授权", "compliance", "forbidden", "license"),
+    }
+
+
+class _RunnerStyleVLMClient:
+    def __init__(self, runner: "WorkflowRunner") -> None:
+        self.runner = runner
+
+    def inspect(self, image_uri: str, prompt: str) -> dict[str, object]:
+        return self.runner._style_vlm_call(image_uri, prompt)
 
 
 @dataclass
@@ -213,7 +267,10 @@ class WorkflowRunner:
         # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
         from interaction.approval_gate import TaskConfirmationDoc
         doc = TaskConfirmationDoc(task_id=task_card.task_id, confirmed_facts=[], default_handling_for_unknowns=[])
-        idea_cards = StyleIdeaGenerator(offline_mode=self.offline_mode).generate(
+        idea_cards = StyleIdeaGenerator(
+            client=None if self.offline_mode else _RunnerStyleVLMClient(self),
+            offline_mode=self.offline_mode,
+        ).generate(
             task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=self.policy.candidate_count
         )
 
@@ -231,18 +288,15 @@ class WorkflowRunner:
         self.output("保持主体内容、品牌色彩与空间条件一致，正在按上述 5 种风格分别生图，请稍候...\n")
 
         # 4. 生图逻辑：固定内容与品牌色，只注入各自风格
+        hard_constraints = _task_hard_constraints(task_card, spec)
+        category_description = category_skill.prompt_injection.category_description if category_skill else ""
+
         def render(index: int) -> dict[str, Any]:
             idea = idea_cards[index] if index < len(idea_cards) else None
-            prompt = (
-                f"商业效果图绘制。\n"
-                f"【项目主体与内容规范】\n{specification_to_markdown(spec)}\n"
-                f"【艺术风格机制】\n"
-                f"风格名称：{idea.title if idea else ''}\n"
-                f"构图分布：{idea.composition if idea else ''}\n"
-                f"材质光影：{idea.material if idea else ''}\n"
-                f"【品类规范】\n{category_skill.prompt_injection.category_description if category_skill else ''}\n"
-                f"要求：保持项目主体与品牌色彩一致，呈现选定的艺术风格机制。"
-            )
+            if idea is None:
+                raise ValueError(f"候选槽位 {index} 缺少已绑定的 VLM 风格理解。")
+            prompt = build_style_candidate_prompt(idea, hard_constraints, category_description)
+            # Scheme B invariant: reference images are VLM-only and never image-provider inputs.
             result = self._image_call("initial_candidate_generation", prompt, [], index=index)
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
 
@@ -359,6 +413,26 @@ class WorkflowRunner:
         client = build_vlm_client(route.binding)
         if client is None: raise RuntimeError("视觉检查模型不可用。")
         return client
+
+    def _style_vlm_call(self, image_uri: str, prompt: str) -> dict[str, object]:
+        import base64
+        import hashlib
+        encoded = image_uri.split(",", 1)[1]
+        controlled_ref = f"controlled-style-sha256:{hashlib.sha256(base64.b64decode(encoded)).hexdigest()}"
+        return self.gateway.call(
+            "style_reference_interpretation",
+            ModelRole.VISION_LANGUAGE_MODEL,
+            lambda route: self._vlm(route).inspect(image_uri, prompt),
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "image", "content": "controlled-style-reference"},
+            ],
+            variables={"controlled_reference": controlled_ref},
+            template_id="style-reference-interpretation",
+            template_version="1",
+            input_refs=[controlled_ref],
+            needs_images=1,
+        )
 
     def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None) -> dict[str, Any]:
         if self.offline_mode:
