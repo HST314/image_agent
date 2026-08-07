@@ -1,4 +1,5 @@
 from pathlib import Path
+import base64
 import time
 import pytest
 from agent_core.batch import CandidateBatchGenerator
@@ -7,7 +8,7 @@ from agent_core.models import DirectionSelection, ImageTaskCard, ModelRole, Refe
 from agent_core.state_machine import RecoverableWorkflow
 from agent_core.workflow import SelfCheckPolicy
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
-from storage.assets import normalize_image_asset
+from storage.assets import AssetPersistenceError, persist_image_asset
 from interaction.confirmation_builder import specification_from_task, specification_to_markdown, update_specification_from_markdown
 from interaction.presenter import Presenter
 from interaction.question_generator import generate_question_card
@@ -123,8 +124,26 @@ def test_14_filter_before_limit_and_unknown_field_is_safe():
     rendered = Presenter().questions(card)
     assert "internal_secret_key" not in rendered
 
-def test_15_asset_normalization_is_stable_and_complete():
-    one = normalize_image_asset({"url":"https://images.example/a.png", "provider":"ark", "model":"seedream"})
-    two = normalize_image_asset({"uri":"https://images.example/a.png", "provider":"ark", "model":"seedream"})
-    assert one["sha256"] == two["sha256"] == one["reference_hash"]
-    assert {"uri", "reference_hash", "sha256", "provider", "model", "mock"} <= one.keys()
+def test_15_generated_asset_is_downloaded_and_persisted(tmp_path: Path):
+    store = ProjectStore(tmp_path, "p"); store.create()
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    asset = persist_image_asset(
+        {"url":"https://temporary.example/a.png", "provider":"ark", "model":"seedream"},
+        store.artifacts,
+        fetcher=lambda _url: (png, "image/png"),
+    )
+    assert asset["uri"] == f'artifact://{asset["artifact_id"]}'
+    assert asset["sha256"] == asset["content_sha256"]
+    assert "temporary.example" not in str(asset)
+    assert store.artifacts.resolve(asset["artifact_id"]).read_bytes() == png
+
+
+def test_16_invalid_download_never_creates_artifact(tmp_path: Path):
+    store = ProjectStore(tmp_path, "p"); store.create()
+    with pytest.raises(AssetPersistenceError):
+        persist_image_asset(
+            {"url":"https://temporary.example/a.png", "provider":"ark", "model":"seedream"},
+            store.artifacts,
+            fetcher=lambda _url: (b"not-an-image", "text/html"),
+        )
+    assert not list((store.root / "artifacts" / "images").glob("*"))

@@ -19,7 +19,7 @@ from model_router.router import ModelRoute, ModelRouter
 from render_clients.ark_client import ArkImageRenderClient
 from render_clients.payload_mapper import build_render_payload
 from storage.project_store import ProjectStore, content_hash
-from storage.assets import normalize_image_asset
+from storage.assets import normalize_image_asset, persist_image_asset
 from interaction.presenter import Presenter
 
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -285,4 +285,4 @@ class WorkflowRunner:
                 str(route.binding.parameters.get("size", "2K")), {"state":state}, watermark=False, reference_images=references)),
             messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
             template_id=state, template_version="2", input_refs=references, needs_images=len(references))
-        return normalize_image_asset(result)
+        return persist_image_asset(result, self.store.artifacts)

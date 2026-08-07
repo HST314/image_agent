@@ -136,13 +136,38 @@ class ArtifactStore:
 
     def save_bytes(self, content: bytes, *, suffix: str, metadata: dict[str, Any]) -> dict[str, Any]:
         digest = hashlib.sha256(content).hexdigest()
-        path = self.root / "images" / f"{digest}{suffix}"
+        suffix = suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            raise ValueError("不支持的图片文件类型。")
+        filename = f"{digest}{suffix}"
+        path = self.root / "images" / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             path.write_bytes(content)
-        record = {"format_version": FORMAT_VERSION, "artifact_id": f"artifact_{digest[:24]}", "uri": str(path), "sha256": digest, **metadata}
+        artifact_id = f"artifact_{digest}"
+        record = {"format_version": FORMAT_VERSION, "artifact_id": artifact_id,
+                  "uri": f"artifact://{artifact_id}", "sha256": digest,
+                  "content_sha256": digest, "filename": filename, **metadata}
         EventStore(self.metadata).append("artifact_saved", **record)
         return record
+
+    def resolve(self, artifact_id: str) -> Path:
+        """Resolve a project-scoped artifact id without accepting paths."""
+        if not artifact_id.startswith("artifact_") or len(artifact_id) != 73:
+            raise FileNotFoundError("图片资源不存在。")
+        records = EventStore(self.metadata).read_all()
+        record = next((item for item in reversed(records)
+                       if item.get("type") == "artifact_saved" and item.get("artifact_id") == artifact_id), None)
+        if record is None:
+            raise FileNotFoundError("图片资源不存在。")
+        filename = str(record.get("filename", ""))
+        candidate = (self.root / "images" / filename).resolve()
+        allowed = (self.root / "images").resolve()
+        if allowed not in candidate.parents or not candidate.is_file():
+            raise FileNotFoundError("图片资源不存在。")
+        if hashlib.sha256(candidate.read_bytes()).hexdigest() != record.get("sha256"):
+            raise CorruptProjectError("图片资源内容哈希校验失败。")
+        return candidate
 
 
 class CheckpointStore:
