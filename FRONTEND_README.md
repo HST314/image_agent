@@ -91,6 +91,37 @@ trace 引用，以及待回传/已回传状态。
 python3 -m pytest -q tests/test_p1_09_delivery_ui.py
 ```
 
+## 统一错误呈现与恢复（P1-10 前端）
+
+监督台统一消费 AsyncJob 与 checkpoint 两个通道的稳定错误对象（`code/stage/
+candidate_slot/rework_round/retryable/suggested_action/trace_id/detail/
+retry_after_seconds`），旧 `{code,message,retryable}` 错误对象按与服务端
+JobStore 读取迁移一致的语义兼容呈现。
+
+- **建议动作映射**：`retry` 显示重试入口；`modify_input` 提示修改输入（草稿/表单
+  保留）；`contact_admin` 提示联系管理员；`human_decision` 提示人工决策；
+  `none` 不给动作。`RATE_LIMITED` 额外按 `retry_after_seconds` 展示受策略约束的
+  等待提示。全部字段按不可信内容转义渲染。
+- **统一作业消费**：`POST /advance` 的 202 受理一律进入真实轮询（`GET status_url`），
+  进度条只展示服务端心跳的真实 `completed/total/unit`；`failed` 展示错误面板，
+  `cancelled` 中性提示；HTTP 422 等请求级错误立即内联/toast 呈现，不进入作业
+  失败面板。轮询中可显式取消（`POST /jobs/{id}/cancel`），`cancel_requested →
+  cancelled` 全程有真实状态文案。
+- **重试语义**：job 通道的重试复用原动作载荷与原幂等键（同键同载荷由服务端重新
+  排队同一 job）；只有读到服务端 `attempt < max_attempts` 才给重试入口，达到上限
+  展示“已达到重试次数上限”且不再给重试。checkpoint 通道（无作业上下文，含历史
+  失败）保留“从上一成功点重试”（`POST /retry`）人工恢复。前端不重放已成功槽位、
+  不推断重试次数、不复制服务端安全门禁。
+- **断线续接**：进行中的作业以 `job-watch:{project_id}` 存入 sessionStorage；
+  刷新或 worker 重启后重新打开工程会继续轮询或升级呈现终态，呈现与刷新前一致。
+- **人工等待保护**：所有 `waiting_*` 相位仍为正常人工待办，失败面板是独立先行
+  分支，等待相位绝不渲染错误代码或重试语义。
+
+```bash
+# P1-10 统一错误呈现 UI 契约测试（需要 node；含 Node DOM shim 交互驱动与跨栈探针）
+python3 -m pytest -q tests/test_p1_10_error_ui.py
+```
+
 ## 安全边界
 
 - 工程 ID 仅允许 2–64 位字母、数字、下划线与连字符，阻止路径穿越。
