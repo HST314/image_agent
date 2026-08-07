@@ -31,8 +31,13 @@ def test_five_mechanisms_require_unique_identity_complete_distinct_signatures():
         field: getattr(ideas[0], field)
         for field in ("composition", "material", "lighting", "narrative", "graphic_language")
     })]
-    with pytest.raises(ValueError, match="机制重复"):
+    with pytest.raises(ValueError, match="机制差异不足"):
         validate_candidate_mechanisms(duplicate_mechanism)
+
+    one_dimension_only = [ideas[0].model_copy(update={"style_index": f"STYLE-{index:03d}",
+                           "graphic_language": f"图形语言 {index}"}) for index in range(5)]
+    with pytest.raises(ValueError, match="至少 3 维"):
+        validate_candidate_mechanisms(one_dimension_only)
 
 
 def test_slot_identity_is_bound_to_stable_key_and_retry_only_renders_failed_slot(tmp_path: Path):
@@ -60,3 +65,21 @@ def test_slot_identity_is_bound_to_stable_key_and_retry_only_renders_failed_slot
     assert events[0]["idempotency_key"] == content_hash(
         ["initial_candidate_generation", "spec-hash", 3, "STYLE-003"]
     )
+
+
+def test_two_failed_slots_resume_with_complete_persisted_audit(tmp_path: Path):
+    store = ProjectStore(tmp_path, "p1-05-two-slots"); store.create()
+    calls, fail_once = [], {1, 4}
+    def render(index: int):
+        calls.append(index)
+        if index in fail_once:
+            fail_once.remove(index); raise RuntimeError("timeout")
+        audit = {"slot": index, "style_index": f"STYLE-{index:03d}", "prompt_sha256": str(index),
+                 "render_idempotency_key": f"render-{index}"}
+        return {"uri": str(index), "sha256": str(index), "candidate_index": index, "style_slot_audit": audit}
+    generator = CandidateBatchGenerator(store, render, attempts=1)
+    first = generator.generate("spec", slot_identities=[f"STYLE-{i:03d}" for i in range(5)])
+    second = generator.generate("spec", slot_identities=[f"STYLE-{i:03d}" for i in range(5)])
+    assert [x["index"] for x in first["failed"]] == [1, 4]
+    assert calls == [0, 1, 2, 3, 4, 1, 4]
+    assert {x["style_slot_audit"]["slot"] for x in second["succeeded"]} == set(range(5))

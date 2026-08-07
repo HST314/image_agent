@@ -547,6 +547,12 @@ class VisualInspectionOutput(StrictBaseModel):
     def decision_matches_passed(self) -> "VisualInspectionOutput":
         if self.passed != (self.decision == "pass"):
             raise ValueError("passed 与 decision 必须一致。")
+        if self.passed and (self.deviations or self.rework_prompt_delta.strip()):
+            raise ValueError("通过结论不得同时包含偏差或返工 Prompt。")
+        if not self.passed and not self.deviations:
+            raise ValueError("未通过结论必须包含至少一个具体偏差。")
+        if self.decision == "continue" and not self.rework_prompt_delta.strip():
+            raise ValueError("继续返工必须包含非空返工 Prompt。")
         return self
 
 

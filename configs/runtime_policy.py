@@ -18,6 +18,7 @@ class SelfCheckRuntimePolicy(BaseModel):
     max_rounds: int = Field(ge=1, le=20)
     stop_early_on_pass: bool
     release: Literal["auto", "manual"]
+    rule_version: str = Field(default="visual-inspection-v2", min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def validate_rounds(self):
@@ -35,6 +36,7 @@ class RuntimePolicy(BaseModel):
     clarification_total_budget: int = Field(ge=0, le=100)
     candidate_count: int = Field(default=5, ge=1, le=10)
     candidate_concurrency: int = Field(default=5, ge=1, le=10)
+    candidate_min_mechanism_differences: int = Field(default=3, ge=1, le=5)
     stream_model_output: bool
     self_check: SelfCheckRuntimePolicy
     approval_required: bool

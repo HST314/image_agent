@@ -6,12 +6,14 @@ stream_model_output: false
 clarification_total_budget: 10
 candidate_count: 5
 candidate_concurrency: 5
+candidate_min_mechanism_differences: 3
 self_check:
   termination: solo
   fixed_rounds: 2
   max_rounds: 4
   stop_early_on_pass: false
   release: auto
+  rule_version: visual-inspection-v2
 approval_required: true
 max_render_retries: 2
 max_calibration_retries: 3
