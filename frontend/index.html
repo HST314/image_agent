@@ -53,7 +53,22 @@
     .hist-asset span{display:block;padding:6px 8px;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .hist-asset.is-broken{display:grid;place-items:center;min-height:92px}
     .hist-asset.is-broken:after{content:attr(data-note);padding:10px;font-size:12px;color:var(--danger);text-align:center}
-    @media(max-width:1023px){.hist-grid{grid-template-columns:1fr}}
+    .obs-grid{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:18px;align-items:start}
+    .obs-progress{display:grid;gap:12px;align-content:start}
+    .obs-kvrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px}
+    .obs-slots{display:flex;gap:8px;flex-wrap:wrap}
+    .obs-slot{width:44px;height:44px;display:grid;place-items:center;border:1px solid var(--border);border-radius:10px;background:var(--subtle);font-size:12px;font-weight:700;color:var(--muted)}
+    .obs-slot.is-ok{border-color:var(--success);background:var(--success-soft);color:var(--success)}
+    .obs-slot.is-fail{border-color:var(--danger);background:var(--danger-soft);color:var(--danger)}
+    .obs-log{display:grid;gap:8px;align-content:start;max-height:520px;overflow:auto}
+    .obs-event{display:grid;gap:4px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:13px}
+    .obs-event__meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+    .obs-event__trace{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--muted)}
+    .obs-stream{display:inline-flex;align-items:center;gap:7px}
+    .obs-dot{width:9px;height:9px;border-radius:50%;background:var(--muted)}
+    .obs-dot.is-live{background:var(--success)}
+    .obs-dot.is-down{background:var(--warning)}
+    @media(max-width:1023px){.hist-grid{grid-template-columns:1fr}.obs-grid{grid-template-columns:1fr}}
     @media(max-width:767px){.ge-stage{height:min(48vh,420px)}}
     @media(max-width:1023px){.app{grid-template-columns:1fr}.sidebar{position:fixed;left:0;top:0;width:min(320px,88vw);transform:translateX(-105%);transition:transform var(--ease);box-shadow:var(--shadow)}.sidebar.is-open{transform:none}.mobile-menu{display:grid}.hero,.workspace{grid-template-columns:1fr}.hero__aside{grid-template-columns:1fr 1fr}.workspace__rail{grid-template-columns:repeat(2,minmax(0,1fr))}.workspace__rail .panel:last-child{grid-column:1/-1}}
     @media(max-width:767px){.topbar{min-height:66px}.topbar__actions .btn span{display:none}.content{padding:16px}.hero__aside,.workspace__rail{grid-template-columns:1fr}.workspace__rail .panel:last-child{grid-column:auto}.stepper{display:flex;overflow-x:auto;padding-bottom:8px}.step{min-width:110px}.candidate-grid{grid-template-columns:1fr}.section__head{display:block}.section__head .badge{margin-top:8px}.dialog__head,.dialog__body,.dialog__foot{padding:16px}.dialog__foot{flex-direction:column-reverse}.dialog__foot .btn{width:100%}}
@@ -88,6 +103,11 @@
     const HIST_FACT_LABELS={raw_design_task_envelope:'原始任务',task_specification:'任务书',task_spec_confirmation:'任务书确认',style_cards:'风格卡',style_idea_cards:'风格创意卡',style_slot_audit:'VLM 审计',candidate_assets:'候选资产',candidates:'候选',inspection:'质检',inspection_history:'质检历史',model_output_summary:'模型摘要',model_outputs:'模型输出',human_decision:'人工决策',direction_selection:'方向选择',quality_disposition:'质量处置',final_confirmation:'最终确认',frozen_delivery:'冻结交付',delivery_frozen:'交付冻结'};
     const HIST_INVALIDATED_LABELS={task_spec_confirmation:'任务书确认',inspection:'质检结论',inspection_history:'质检历史',final_confirmation:'最终确认',frozen_delivery:'冻结交付',delivery_frozen:'交付冻结',quality_disposition:'质量处置'};
     const historyUi={key:'',listStatus:'idle',items:[],nextCursor:null,listError:'',loadingMore:false,selected:'',detailStatus:'idle',detail:null,detailError:'',reopenNode:'',previewStatus:'idle',preview:null,previewError:'',expectedVersion:null,confirming:false,confirmError:'',confirmHint:''};
+    const OBS_PAGE=50;let OBS_RECONNECT_MS=2000;
+    const OBS_STATUS_LABELS={queued:'排队中',running:'处理中',succeeded:'已成功',failed:'失败',cancel_requested:'正在取消',cancelled:'已取消',waiting:'等待人工',retrying:'重试中',recovered:'已恢复',partial:'部分完成',idle:'空闲'};
+    const OBS_EVENT_LABELS={project_created:'创建工程',step_started:'开始节点',step_succeeded:'完成节点',step_failed:'节点失败',job_queued:'任务入队',job_started:'任务开始',job_finished:'任务结束',job_cancel_requested:'请求取消',job_recovered:'worker 恢复',retry_started:'开始重试',candidate_succeeded:'候选图完成',candidate_failed:'候选图失败',inspection_started:'开始质检',inspection_presented:'质检结果',inspection_completed:'完成质检',inspection_reused:'复用质检',calibration_round_limit_reached:'返工到限',calibration_invalidated:'校准失效',calibration_current_asset_accepted:'校准通过',calibration_terminated_without_delivery:'终止交付',quality_disposition_recorded:'质量处置',waiting_human_approval:'等待人工审批',task_spec_confirmed:'任务书确认',task_spec_confirmation_invalidated:'任务书确认失效',human_rework_completed:'人工修改完成',rework_started:'开始返工',rework_completed:'完成返工',round_checkpointed:'轮次检查点',branch_created:'创建分支',branch_switched:'切换分支',final_asset_confirmed:'最终确认',final_confirmation_declined:'最终确认退回',delivery_generated:'交付生成',delivery_returned:'交付回传',delivery_note_generation_failed:'说明生成失败',parallel:'并行推进',resume_probe:'恢复探测',model_config_loaded:'模型配置加载',skill_degraded:'Skill 降级',skill_load_blocked:'Skill 加载受阻',legacy_asset_invalidated:'旧资产失效',legacy_asset_migrated:'旧资产迁移',tick:'心跳'};
+    const OBS_UNIT_LABELS={candidate:'候选图',workflow:'工作流单元',round:'质检轮次',asset:'资产'};
+    const obsUi={key:'',logStatus:'idle',items:[],seenSeq:new Set(),seenIds:new Set(),nextCursor:null,throughSequence:null,lastSeq:0,logError:'',logErrorStatus:0,logErrorTrace:'',loadingMore:false,pulling:false,endReached:false,streamStatus:'idle',source:null,reconnectTimer:0,progressStatus:'idle',progress:null,progressError:'',progressTrace:'',progressInFlight:false};
     let JOB_POLL_MS=800;const jobUi={key:'',jobId:'',statusUrl:'',payload:null,job:null,busy:false,cancelling:false,noteEl:null,noteText:null,cancelEl:null};
     const ERR_CODE_LABELS={UPSTREAM_TIMEOUT:'上游超时',RATE_LIMITED:'请求被限流',AUTHENTICATION_FAILED:'鉴权失败',CONTENT_REJECTED:'内容审核未通过',PROVIDER_UNAVAILABLE:'供应商暂不可用',ASSET_INGESTION_FAILED:'资产摄取失败',STRUCTURED_OUTPUT_INVALID:'模型输出结构无效',INVALID_INPUT:'输入不合法',CONFIGURATION_OR_SKILL:'配置或 Skill 异常',CANCELLED:'已取消',INTERNAL_ERROR:'内部错误'};
     const ERR_ACTION_COPY={retry:'可安全重试：重试复用原动作与幂等语义，从最后成功边界继续。',modify_input:'需要修改输入：请调整任务书、提示词或素材后重新提交。',contact_admin:'需要管理员处理：请联系管理员检查凭证、配置或 Skill。',human_decision:'需要人工决策：请审阅后选择处理方式。',none:'该状态无需重试。'};
@@ -184,9 +204,9 @@
         }catch(e){toast(e.message,'error')}finally{jobUi.busy=false;setBusy(false);jobNoteClear()}
       }catch{/* 网络不可用时保留 watch，下次刷新继续续接 */}
     }
-    function renderHome(){state.current=null;$('#page-title').textContent='开始一项新的视觉创作';$('#context-label').textContent='创作工作台';$('#content').innerHTML=`<section class="hero"><div class="panel hero__main"><span class="badge">生产工作流</span><h2>从清晰需求到<br>可审计视觉交付</h2><p>在一个可恢复的工作台中完成需求澄清、任务确认、五图选择、逐轮质检和最终审批。每一步都保存为后端检查点。</p><button class="btn btn--primary" data-new>${icons.image}新建视觉工程</button></div><aside class="panel hero__aside"><div><div class="stat-label">现有工程</div><div class="stat-value">${state.projects.length}</div></div><div class="hint">工作流会在需要你决策时暂停。断线或关闭页面不会丢失已经完成的节点。</div></aside></section><section class="panel section"><div class="section__head"><div><h2>最近工程</h2><p>选择工程可继续上一次的检查点</p></div></div>${state.projects.length?`<div class="candidate-grid">${state.projects.slice(0,4).map(p=>`<button class="candidate" data-project="${escapeAttr(p.project_id)}"><span class="candidate__image">${icons.image}</span><span class="candidate__label">${escapeHtml(p.project_id)} · ${escapeHtml(labels[p.state]||'待处理')}</span></button>`).join('')}</div>`:`<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>尚无创作工程</h3><p>准备一份 ImageTaskCard，系统会从真实后端工作流开始推进。</p><button class="btn btn--secondary" data-new>创建第一个工程</button></div></div>`}</section>`;renderNav()}
-    async function openProject(id){setBusy(true,'正在读取工程…');dlvReset();histReopenClose();histReset();try{state.current=await api(`/api/projects/${encodeURIComponent(id)}`);renderProject();renderNav();closeSidebar();jobWatchResume(id)}catch(e){toast(e.message,'error')}finally{setBusy(false)}}
-    function renderProject(){const v=state.current,s=v.snapshot||{},m=v.manifest||{},idx=Math.max(0,order.indexOf(s.state));$('#page-title').textContent=v.project_id;$('#context-label').textContent=s.completed?'已完成工程':(labels[s.state]||'创作工程');const status=m.failed_step?'<span class="badge badge--danger">需要恢复</span>':s.completed?'<span class="badge badge--success">已完成</span>':s.waiting?'<span class="badge badge--warning">等待你的决定</span>':'<span class="badge">可继续</span>';$('#content').innerHTML=`${state.offline?`<div class="offline-banner" role="status">${icons.info}<span><strong>离线测试模式</strong>：生成结果为模拟资产，不可用于最终交付。</span></div><br>`:''}<section class="panel section"><div class="section__head"><div><h2>创作进度</h2><p>当前分支 ${escapeHtml(m.current_branch||'main')} · 检查点 ${m.current_checkpoint?.sequence||0}</p></div>${status}</div><div class="stepper" aria-label="工作流进度">${order.map((key,i)=>`<div class="step ${i<idx?'is-done':i===idx?'is-current':''}"><div class="step__bar"></div><span>${labels[key]}</span></div>`).join('')}</div></section><div class="workspace"><div class="workspace__primary"><section class="panel section stage">${renderStage(s,m)}</section>${s.task_markdown?`<section class="panel section"><div class="section__head"><div><h3>创作任务书</h3><p>由生产后端生成的可审计版本</p></div></div><div class="markdown">${escapeHtml(s.task_markdown)}</div></section>`:''}</div><aside class="workspace__rail"><section class="panel section"><div class="section__head"><div><h3>工程信息</h3></div></div><dl class="kv"><dt>当前状态</dt><dd>${escapeHtml(labels[s.state]||s.state||'未开始')}</dd><dt>当前分支</dt><dd>${escapeHtml(m.current_branch||'main')}</dd><dt>更新时间</dt><dd>${formatDate(m.updated_at)}</dd><dt>恢复能力</dt><dd>${v.capabilities.map(escapeHtml).join('、')||'无'}</dd></dl></section><section class="panel section"><div class="section__head"><div><h3>最近活动</h3><p>真实事件审计记录</p></div></div>${renderTimeline(v.history)}</section></aside></div><section class="panel section" id="hist-root">${renderHistorySection()}</section>`;if(!m.failed_step&&s.phase==='waiting_human_rework')initGuidedEdit();if(!m.failed_step&&s.completed){bindDelivery();loadDelivery()}bindHistory();histMaybeLoad();const jr=$('#job-retry');if(jr)jr.addEventListener('click',jobRetryOriginal)}
+    function renderHome(){state.current=null;obsReset();$('#page-title').textContent='开始一项新的视觉创作';$('#context-label').textContent='创作工作台';$('#content').innerHTML=`<section class="hero"><div class="panel hero__main"><span class="badge">生产工作流</span><h2>从清晰需求到<br>可审计视觉交付</h2><p>在一个可恢复的工作台中完成需求澄清、任务确认、五图选择、逐轮质检和最终审批。每一步都保存为后端检查点。</p><button class="btn btn--primary" data-new>${icons.image}新建视觉工程</button></div><aside class="panel hero__aside"><div><div class="stat-label">现有工程</div><div class="stat-value">${state.projects.length}</div></div><div class="hint">工作流会在需要你决策时暂停。断线或关闭页面不会丢失已经完成的节点。</div></aside></section><section class="panel section"><div class="section__head"><div><h2>最近工程</h2><p>选择工程可继续上一次的检查点</p></div></div>${state.projects.length?`<div class="candidate-grid">${state.projects.slice(0,4).map(p=>`<button class="candidate" data-project="${escapeAttr(p.project_id)}"><span class="candidate__image">${icons.image}</span><span class="candidate__label">${escapeHtml(p.project_id)} · ${escapeHtml(labels[p.state]||'待处理')}</span></button>`).join('')}</div>`:`<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>尚无创作工程</h3><p>准备一份 ImageTaskCard，系统会从真实后端工作流开始推进。</p><button class="btn btn--secondary" data-new>创建第一个工程</button></div></div>`}</section>`;renderNav()}
+    async function openProject(id){setBusy(true,'正在读取工程…');dlvReset();histReopenClose();histReset();obsReset();try{state.current=await api(`/api/projects/${encodeURIComponent(id)}`);renderProject();renderNav();closeSidebar();jobWatchResume(id)}catch(e){toast(e.message,'error')}finally{setBusy(false)}}
+    function renderProject(){const v=state.current,s=v.snapshot||{},m=v.manifest||{},idx=Math.max(0,order.indexOf(s.state));$('#page-title').textContent=v.project_id;$('#context-label').textContent=s.completed?'已完成工程':(labels[s.state]||'创作工程');const status=m.failed_step?'<span class="badge badge--danger">需要恢复</span>':s.completed?'<span class="badge badge--success">已完成</span>':s.waiting?'<span class="badge badge--warning">等待你的决定</span>':'<span class="badge">可继续</span>';$('#content').innerHTML=`${state.offline?`<div class="offline-banner" role="status">${icons.info}<span><strong>离线测试模式</strong>：生成结果为模拟资产，不可用于最终交付。</span></div><br>`:''}<section class="panel section"><div class="section__head"><div><h2>创作进度</h2><p>当前分支 ${escapeHtml(m.current_branch||'main')} · 检查点 ${m.current_checkpoint?.sequence||0}</p></div>${status}</div><div class="stepper" aria-label="工作流进度">${order.map((key,i)=>`<div class="step ${i<idx?'is-done':i===idx?'is-current':''}"><div class="step__bar"></div><span>${labels[key]}</span></div>`).join('')}</div></section><div class="workspace"><div class="workspace__primary"><section class="panel section stage">${renderStage(s,m)}</section>${s.task_markdown?`<section class="panel section"><div class="section__head"><div><h3>创作任务书</h3><p>由生产后端生成的可审计版本</p></div></div><div class="markdown">${escapeHtml(s.task_markdown)}</div></section>`:''}</div><aside class="workspace__rail"><section class="panel section"><div class="section__head"><div><h3>工程信息</h3></div></div><dl class="kv"><dt>当前状态</dt><dd>${escapeHtml(labels[s.state]||s.state||'未开始')}</dd><dt>当前分支</dt><dd>${escapeHtml(m.current_branch||'main')}</dd><dt>更新时间</dt><dd>${formatDate(m.updated_at)}</dd><dt>恢复能力</dt><dd>${v.capabilities.map(escapeHtml).join('、')||'无'}</dd></dl></section><section class="panel section"><div class="section__head"><div><h3>最近活动</h3><p>真实事件审计记录</p></div></div>${renderTimeline(v.history)}</section></aside></div><section class="panel section" id="obs-root">${renderObservabilitySection()}</section><section class="panel section" id="hist-root">${renderHistorySection()}</section>`;if(!m.failed_step&&s.phase==='waiting_human_rework')initGuidedEdit();if(!m.failed_step&&s.completed){bindDelivery();loadDelivery()}bindHistory();histMaybeLoad();bindObservability();obsMaybeLoad();const jr=$('#job-retry');if(jr)jr.addEventListener('click',jobRetryOriginal)}
     function renderStage(s,m){const wj=state.current&&jobUi.key===state.current.project_id&&jobUi.job&&String(jobUi.job.status)==='failed'?jobUi.job:null;if(m.failed_step||wj)return renderFailureStage(s,m);if(s.completed)return `<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>视觉资产已完成最终审批</h3><p>最终资产已由生产工作流校验并冻结；继续修改需从历史节点创建新分支。</p>${assetView(s.final_asset)}${s.final_confirmation?`<dl class="kv" style="max-width:360px;margin:12px auto 0"><dt>最终确认人</dt><dd>${escapeHtml(s.final_confirmation.actor||'—')}</dd><dt>确认时间</dt><dd>${formatDate(s.final_confirmation.confirmed_at)}</dd></dl>`:''}</div></div><div id="dlv-root" style="margin-top:22px;border-top:1px solid var(--border);padding-top:20px;text-align:left">${renderDeliverySection()}</div>`;if(s.phase==='waiting_clarification')return renderQuestions(s.question_card);if(s.phase==='waiting_task_spec_confirmation')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>请确认当前任务书</h3><p>确认将绑定当前版本与正文哈希；任务书编辑后必须重新确认。</p><button class="btn btn--primary" data-confirm="task">确认任务书并继续</button></div></div>`;if(s.phase==='waiting_candidate_retry')return renderCandidateRetry(s);if(s.phase==='waiting_master_selection')return renderCandidates(s.candidates);if(s.phase==='waiting_human_approval')return renderCalibration(s);if(s.phase==='waiting_quality_disposition')return renderQualityDisposition(s);if(s.phase==='waiting_final_confirmation')return `<div class="empty"><div><h3>最终人工确认</h3><p>确认绑定当前资产哈希并冻结交付；也可返回人工修改。</p>${assetView(s.asset||s.current_asset)}<div class="button-row"><button class="btn btn--primary" data-confirm="final">确认并冻结交付</button><button class="btn btn--secondary" data-confirm="continue">继续修改</button></div></div></div>`;if(s.phase==='waiting_human_rework')return renderGuidedEdit(s,m);if(s.phase==='waiting_reinspection')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>修改已保存，等待重新质检</h3><p>继续后将使用真实视觉模型检查最新资产，不会复用旧质检结论。</p><button class="btn btn--primary" data-action="resume">开始重新质检</button></div></div>`;return `<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>${escapeHtml(labels[s.state]||'工程已保存')}</h3><p>从当前检查点继续推进。若外部模型或密钥不可用，系统会保存真实错误供恢复。</p><button class="btn btn--primary" data-action="resume">继续工作流</button></div></div>`}
     function renderQuestions(card={questions:[]}){return `<div class="section__head"><div><h2>补充关键信息</h2><p>这些答案会写回生产任务卡后再继续</p></div><span class="badge badge--warning">${card.questions.length} 项待回答</span></div><form id="answer-form">${card.questions.map((q,i)=>`<fieldset class="field"><legend>${i+1}. ${escapeHtml(q.question)}</legend><small>${escapeHtml(q.impact||'')}</small><select class="input" name="${escapeAttr(q.field)}"><option value="">请选择或在下方输入</option>${(q.options||[]).map(o=>`<option value="${escapeAttr(o.label)}">${escapeHtml(o.label)} — ${escapeHtml(o.description)}</option>`).join('')}</select><input class="input" name="${escapeAttr(q.field)}__custom" placeholder="也可输入自己的答案"></fieldset>`).join('')}<button class="btn btn--primary" type="submit">提交答案并继续</button></form>`}
     function renderCandidates(items=[]){return `<div class="section__head"><div><h2>选择一张当前主图</h2><p>选中后进入画面质检与返工阶段</p></div><span class="badge">${items.length} 个方向</span></div><div class="candidate-grid">${items.map((a,i)=>`<button class="candidate" data-candidate="${escapeAttr(a.id)}" aria-pressed="false"><span class="candidate__image">${assetImage(a)}</span><span class="candidate__label">候选方向 ${i+1}</span></button>`).join('')}</div><div class="button-row" style="margin-top:16px"><button class="btn btn--primary" id="select-button" disabled>确认当前主图</button></div>`}
@@ -460,6 +480,202 @@
       }finally{historyUi.confirming=false;histReopenRender()}
     }
     function histReopenClose(){const dlg=$('#reopen-dialog');if(dlg&&dlg.close)dlg.close();histReopenReset()}
+    // ---- P2-03 运行监督台：真实事件日志 + 概要进度（全部只读，零业务写入）----
+    function obsReset(){obsCloseStream();clearTimeout(obsUi.reconnectTimer);obsUi.key='';obsUi.logStatus='idle';obsUi.items=[];obsUi.seenSeq=new Set();obsUi.seenIds=new Set();obsUi.nextCursor=null;obsUi.throughSequence=null;obsUi.lastSeq=0;obsUi.logError='';obsUi.logErrorStatus=0;obsUi.logErrorTrace='';obsUi.loadingMore=false;obsUi.pulling=false;obsUi.endReached=false;obsUi.streamStatus='idle';obsUi.progressStatus='idle';obsUi.progress=null;obsUi.progressError='';obsUi.progressTrace='';obsUi.progressInFlight=false}
+    function obsMaybeLoad(){const pid=state.current&&state.current.project_id;if(!pid||obsUi.key===pid)return;obsReset();obsUi.key=pid;obsUi.logStatus='loading';obsUi.progressStatus='loading';obsUi.streamStatus='connecting';obsLoadPage(null);obsLoadProgress();obsOpenStream()}
+    async function obsFetch(path){
+      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+      try{
+        const res=await fetch(path,{signal:controller.signal});
+        let data;try{data=await res.json()}catch{data=null}
+        if(!res.ok){
+          const detail=data&&typeof data==='object'?data.detail:null;
+          const err=new Error(typeof detail==='string'?detail:(detail&&typeof detail==='object'&&!Array.isArray(detail)&&typeof detail.message==='string'?detail.message:(Array.isArray(detail)?formatError(detail):'请求未完成，请稍后重试。')));
+          err.status=res.status;
+          if(detail&&typeof detail==='object'&&!Array.isArray(detail)){err.code=typeof detail.code==='string'?detail.code:'';err.traceId=typeof detail.trace_id==='string'?detail.trace_id:''}
+          throw err;
+        }
+        return data&&typeof data==='object'?data:{};
+      }catch(error){
+        if(error.name==='AbortError')throw new Error('请求超时。后端可能仍在处理，请稍后刷新工程状态。');
+        if(error instanceof TypeError)throw new Error('无法连接服务。请检查 FastAPI 是否运行，然后重试。');
+        throw error;
+      }finally{clearTimeout(timer)}
+    }
+    function obsNormalize(raw){
+      if(!raw||typeof raw!=='object')return null;
+      const seq=Number(raw.sequence);
+      if(!Number.isInteger(seq)||seq<1)return null;
+      return{event_id:typeof raw.event_id==='string'?raw.event_id:'',sequence:seq,event_type:typeof raw.event_type==='string'?raw.event_type:'unknown',phase:typeof raw.phase==='string'?raw.phase:'',job_id:typeof raw.job_id==='string'?raw.job_id:null,slot:Number.isInteger(raw.slot)?raw.slot:null,round:Number.isInteger(raw.round)?raw.round:null,status:typeof raw.status==='string'?raw.status:'',timestamp:typeof raw.timestamp==='string'?raw.timestamp:'',trace_id:typeof raw.trace_id==='string'?raw.trace_id:null,retry_count:Number.isInteger(raw.retry_count)?Math.max(0,raw.retry_count):0,error_code:typeof raw.error_code==='string'?raw.error_code:null,message:typeof raw.message==='string'?raw.message:null};
+    }
+    function obsIngest(list){
+      if(!Array.isArray(list))return 0;
+      let added=0;
+      for(const raw of list){
+        const e=obsNormalize(raw);if(!e)continue;
+        if(obsUi.seenSeq.has(e.sequence))continue;
+        if(e.event_id&&obsUi.seenIds.has(e.event_id))continue;
+        obsUi.seenSeq.add(e.sequence);if(e.event_id)obsUi.seenIds.add(e.event_id);
+        let lo=0,hi=obsUi.items.length;
+        while(lo<hi){const mid=(lo+hi)>>1;if(obsUi.items[mid].sequence<e.sequence)lo=mid+1;else hi=mid}
+        obsUi.items.splice(lo,0,e);added++;
+        if(e.sequence>obsUi.lastSeq)obsUi.lastSeq=e.sequence;
+      }
+      return added;
+    }
+    async function obsLoadPage(cursor){
+      const pid=obsUi.key;if(!pid)return;
+      const first=cursor===null;
+      if(first){obsUi.logStatus='loading';obsUi.items=[];obsUi.seenSeq=new Set();obsUi.seenIds=new Set();obsUi.nextCursor=null;obsUi.throughSequence=null;obsUi.lastSeq=0;obsUi.logError='';obsUi.logErrorStatus=0;obsUi.logErrorTrace='';obsUi.endReached=false}
+      else{if(obsUi.loadingMore||!obsUi.nextCursor||obsUi.logStatus==='error')return;obsUi.loadingMore=true}
+      obsRenderSection();
+      try{
+        const qs=first?`?limit=${OBS_PAGE}`:`?limit=${OBS_PAGE}&cursor=${encodeURIComponent(cursor)}`;
+        const data=await obsFetch(`/api/projects/${encodeURIComponent(pid)}/event-log${qs}`);
+        if(obsUi.key!==pid)return;
+        obsIngest(data.items);
+        obsUi.nextCursor=typeof data.next_cursor==='string'?data.next_cursor:null;
+        if(Number.isInteger(data.through_sequence))obsUi.throughSequence=obsUi.throughSequence==null?data.through_sequence:Math.max(obsUi.throughSequence,data.through_sequence);
+        if(!obsUi.nextCursor)obsUi.endReached=true;
+        obsUi.logStatus='ready';obsUi.logError='';obsUi.logErrorStatus=0;obsUi.logErrorTrace='';
+      }catch(e){
+        if(obsUi.key!==pid)return;
+        obsUi.logError=e.message;obsUi.logErrorStatus=e.status||0;obsUi.logErrorTrace=e.traceId||'';obsUi.logStatus='error';
+      }finally{
+        obsUi.loadingMore=false;
+        if(obsUi.key===pid&&state.current&&state.current.project_id===pid)obsRenderSection();
+      }
+    }
+    async function obsPullNew(){
+      const pid=obsUi.key;if(!pid||obsUi.pulling||obsUi.logStatus==='loading')return;
+      const since=Math.max(obsUi.lastSeq,obsUi.throughSequence==null?0:obsUi.throughSequence);
+      const wasEnd=obsUi.endReached;
+      obsUi.pulling=true;obsRenderSection();
+      try{
+        const data=await obsFetch(`/api/projects/${encodeURIComponent(pid)}/event-log?limit=${OBS_PAGE}&since=${since}`);
+        if(obsUi.key!==pid)return;
+        obsIngest(data.items);
+        if(Number.isInteger(data.through_sequence))obsUi.throughSequence=Math.max(obsUi.throughSequence==null?0:obsUi.throughSequence,data.through_sequence);
+        if(wasEnd){obsUi.nextCursor=typeof data.next_cursor==='string'?data.next_cursor:null;obsUi.endReached=!obsUi.nextCursor}
+        obsUi.logStatus='ready';obsUi.logError='';obsUi.logErrorStatus=0;obsUi.logErrorTrace='';
+      }catch(e){
+        if(obsUi.key!==pid)return;
+        obsUi.logError=e.message;obsUi.logErrorStatus=e.status||0;obsUi.logErrorTrace=e.traceId||'';obsUi.logStatus='error';
+      }finally{
+        obsUi.pulling=false;
+        if(obsUi.key===pid&&state.current&&state.current.project_id===pid)obsRenderSection();
+      }
+    }
+    async function obsReloadLog(){const pid=obsUi.key;if(!pid)return;obsCloseStream();await obsLoadPage(null);if(obsUi.key===pid)obsOpenStream()}
+    function obsCloseStream(){const src=obsUi.source;obsUi.source=null;if(src){try{src.close()}catch{}}}
+    function obsScheduleReconnect(pid){clearTimeout(obsUi.reconnectTimer);obsUi.reconnectTimer=setTimeout(()=>{if(obsUi.key===pid&&state.current&&state.current.project_id===pid&&!obsUi.source)obsOpenStream()},OBS_RECONNECT_MS)}
+    function obsOpenStream(){
+      const pid=obsUi.key;if(!pid)return;
+      obsCloseStream();
+      obsUi.streamStatus='connecting';obsRenderSection();
+      let src;
+      try{src=new EventSource(`/api/projects/${encodeURIComponent(pid)}/events?after=${obsUi.lastSeq}`)}
+      catch{obsUi.streamStatus='reconnecting';obsRenderSection();obsScheduleReconnect(pid);return}
+      obsUi.source=src;
+      src.onopen=()=>{if(obsUi.source!==src||obsUi.key!==pid)return;obsUi.streamStatus='live';obsRenderSection();if(obsUi.endReached)obsPullNew();obsLoadProgress()};
+      const onEvent=(ev)=>{if(obsUi.source!==src||obsUi.key!==pid)return;let raw=null;try{raw=JSON.parse(ev&&ev.data?ev.data:'{}')}catch{raw=null}if(raw&&obsIngest([raw])){obsRenderSection();obsLoadProgress()}};
+      src.onmessage=onEvent;
+      for(const t of Object.keys(OBS_EVENT_LABELS))src.addEventListener(t,onEvent);
+      src.onerror=()=>{if(obsUi.source!==src)return;obsCloseStream();obsUi.streamStatus='reconnecting';obsRenderSection();obsScheduleReconnect(pid)};
+    }
+    async function obsLoadProgress(){
+      const pid=obsUi.key;if(!pid||obsUi.progressInFlight)return;
+      obsUi.progressInFlight=true;
+      try{
+        const data=await obsFetch(`/api/projects/${encodeURIComponent(pid)}/progress`);
+        if(obsUi.key!==pid)return;
+        obsUi.progress=data;obsUi.progressStatus='ready';obsUi.progressError='';obsUi.progressTrace='';
+      }catch(e){
+        if(obsUi.key!==pid)return;
+        obsUi.progressError=e.message;obsUi.progressTrace=e.traceId||'';obsUi.progressStatus='error';
+      }finally{
+        obsUi.progressInFlight=false;
+        if(obsUi.key===pid&&state.current&&state.current.project_id===pid)obsRenderSection();
+      }
+    }
+    function obsRenderSection(){const host=$('#obs-root');if(!host)return;host.innerHTML=renderObservabilitySection();bindObservability()}
+    function obsStreamBadge(){
+      const map={idle:['','实时事件未启动'],connecting:['','正在连接实时事件…'],live:['is-live','实时事件已连接'],reconnecting:['is-down','连接已断开，等待自动重连…']};
+      const pair=map[obsUi.streamStatus]||map.idle;
+      return `<span class="badge obs-stream"><span class="obs-dot ${pair[0]}"></span>${pair[1]}</span>`;
+    }
+    function obsStatusBadge(status,waiting){
+      if(waiting)return '<span class="badge badge--warning">等待人工处理</span>';
+      const cls=status==='failed'?'badge--danger':status==='cancel_requested'?'badge--warning':status==='succeeded'?'badge--success':'';
+      return `<span class="badge ${cls}">${escapeHtml(OBS_STATUS_LABELS[status]||status||'未知')}</span>`;
+    }
+    function renderObservabilitySection(){
+      const head=`<div class="section__head"><div><h3>运行监督台</h3><p>概要进度与事件日志均来自服务端真实投影；浏览、翻页、轮询与断线重连不会改写任何业务状态</p></div>${obsStreamBadge()}</div>`;
+      return head+`<div class="obs-grid"><div class="obs-progress" id="obs-progress">${renderObsProgress()}</div><div class="obs-log" id="obs-log">${renderObsLog()}</div></div>`;
+    }
+    function renderObsProgress(){
+      if(obsUi.progressStatus==='idle'||obsUi.progressStatus==='loading')return `<div class="skeleton"></div><div class="skeleton"></div><p style="color:var(--muted);font-size:13px">正在读取真实进度…</p>`;
+      if(obsUi.progressStatus==='error')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>进度读取失败</h3><p>${escapeHtml(obsUi.progressError)}</p>${obsUi.progressTrace?`<p class="obs-event__trace">trace_id: ${escapeHtml(obsUi.progressTrace)}</p>`:''}<button type="button" class="btn btn--secondary" id="obs-progress-retry">重试读取</button></div></div>`;
+      const p=obsUi.progress||{};
+      const waiting=p.waiting_for_human===true;
+      const phaseLabel=p.phase?(labels[p.phase]||p.phase):'—';
+      const work=p.work&&typeof p.work==='object'?p.work:{};
+      const wc=Number.isInteger(work.completed)?work.completed:0,wt=Number.isInteger(work.total)?work.total:0;
+      const unitLabel=OBS_UNIT_LABELS[work.unit]||work.unit||'单元';
+      const cand=p.candidates&&typeof p.candidates==='object'?p.candidates:{};
+      const done=new Set(Array.isArray(cand.completed_slots)?cand.completed_slots:[]);
+      const failed=new Set(Array.isArray(cand.failed_slots)?cand.failed_slots:[]);
+      const total=Number.isInteger(cand.total)?cand.total:0;
+      const slots=total?Array.from({length:total},(_,i)=>`<span class="obs-slot ${done.has(i)?'is-ok':failed.has(i)?'is-fail':''}" title="槽位 ${i+1}${done.has(i)?'：已完成':failed.has(i)?'：失败':'：未完成'}">${done.has(i)?'✓':failed.has(i)?'✗':i+1}</span>`).join(''):'';
+      const quality=p.quality&&typeof p.quality?p.quality:{};
+      const job=p.job&&typeof p.job==='object'?p.job:null;
+      const recovered=job&&job.status==='running'&&Number.isInteger(job.attempt)&&job.attempt>1;
+      const rows=[
+        `<div class="obs-kvrow"><strong>当前阶段</strong>${escapeHtml(String(phaseLabel))}${obsStatusBadge(String(p.status||'idle'),waiting)}</div>`,
+        waiting?`<p class="hint">人工等待是正常等待态，不是失败；处理完当前人工事项后工作流会继续。</p>`:'',
+        `<div class="obs-kvrow"><strong>工作单元</strong><span>${wc}/${wt} ${escapeHtml(String(unitLabel))}</span></div>`,
+        total?`<div><div class="obs-kvrow" style="margin-bottom:6px"><strong>候选槽位</strong><span>已完成 ${done.size} 个 · 失败 ${failed.size} 个 · 共 ${total} 个</span></div><div class="obs-slots">${slots}</div></div>`:'',
+        `<div class="obs-kvrow"><strong>质检轮次</strong><span>第 ${Number.isInteger(quality.current_round)?quality.current_round:0} 轮 / 上限 ${Number.isInteger(quality.max_rounds)?quality.max_rounds:1} 轮</span>${quality.at_limit===true?'<span class="badge badge--warning">已到返工上限，等待人工处置</span>':''}</div>`,
+        job?`<div class="obs-kvrow"><strong>后台任务</strong><span>${escapeHtml(String(job.job_id||'').slice(0,12))}…</span>${obsStatusBadge(String(job.status||''),false)}<span>第 ${Number.isInteger(job.attempt)?job.attempt:0} 次尝试 · 已重试 ${Number.isInteger(job.retry_count)?job.retry_count:0} 次</span>${recovered?'<span class="badge">worker 恢复后继续执行</span>':''}</div>`:'<div class="obs-kvrow"><strong>后台任务</strong><span>当前没有后台任务记录</span></div>',
+        `<div class="obs-kvrow"><strong>事件水位</strong><span>#${Number.isInteger(p.through_sequence)?p.through_sequence:0}</span><button type="button" class="btn btn--secondary" id="obs-progress-refresh">刷新进度</button></div>`,
+      ];
+      return rows.filter(Boolean).join('');
+    }
+    function obsEventRow(e){
+      const statusCls=e.status==='failed'?'badge--danger':(e.status==='waiting'||e.status==='cancel_requested')?'badge--warning':(e.status==='succeeded'||e.status==='recovered')?'badge--success':'';
+      const bits=[`#${e.sequence}`];
+      if(e.phase)bits.push(labels[e.phase]||e.phase);
+      if(e.slot!=null)bits.push(`槽位 ${e.slot+1}`);
+      if(e.round!=null)bits.push(`第 ${e.round} 轮`);
+      if(e.retry_count>0)bits.push(`重试 ${e.retry_count} 次`);
+      if(e.job_id)bits.push(`任务 ${e.job_id.slice(0,12)}…`);
+      const err=e.error_code?`<span class="badge badge--danger">${escapeHtml(ERR_CODE_LABELS[e.error_code]||e.error_code)}</span>`:'';
+      const trace=e.trace_id?`<span class="obs-event__trace">${escapeHtml(e.trace_id)}</span>`:'';
+      const msg=e.message?`<div>${escapeHtml(e.message)}</div>`:'';
+      return `<div class="obs-event"><div class="obs-event__meta"><span class="badge ${statusCls}">${escapeHtml(OBS_STATUS_LABELS[e.status]||e.status||'未知')}</span><strong>${escapeHtml(OBS_EVENT_LABELS[e.event_type]||e.event_type)}</strong>${bits.map(b=>`<span>${escapeHtml(b)}</span>`).join('')}${err}</div>${msg}<div class="obs-event__meta"><time>${escapeHtml(formatDate(e.timestamp))}</time>${trace}</div></div>`;
+    }
+    function renderObsLog(){
+      if(obsUi.logStatus==='idle'||obsUi.logStatus==='loading')return `<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><p style="color:var(--muted);font-size:13px">正在加载事件日志…</p>`;
+      const st=obsUi.logErrorStatus;
+      const errBox=obsUi.logStatus==='error'?`<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>${st===409?'事件游标或查询范围已失效':st===422?'事件查询参数未通过校验':'事件日志读取失败'}</h3><p>${escapeHtml(obsUi.logError)}</p>${obsUi.logErrorTrace?`<p class="obs-event__trace">trace_id: ${escapeHtml(obsUi.logErrorTrace)}</p>`:''}<button type="button" class="btn btn--secondary" id="obs-log-retry">${st===409?'重载事件日志':'重试加载'}</button></div></div>`:'';
+      if(obsUi.logStatus==='error'&&!obsUi.items.length)return errBox;
+      if(!obsUi.items.length)return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>暂无事件记录</h3><p>工作流推进后，真实事件会按服务端序号逐条出现在这里。</p></div></div>`;
+      const rows=obsUi.items.map(obsEventRow).join('');
+      const more=obsUi.logStatus!=='error'&&obsUi.nextCursor?`<button type="button" class="btn btn--secondary" id="obs-more"${obsUi.loadingMore?' disabled':''}>${obsUi.loadingMore?'正在加载…':'加载更多事件'}</button>`:'';
+      const endMark=obsUi.logStatus!=='error'&&!obsUi.nextCursor?`<p style="color:var(--muted);font-size:13px;margin:6px 0 0">已加载到冻结水位 #${escapeHtml(String(obsUi.throughSequence==null?0:obsUi.throughSequence))} 的全部事件</p>`:'';
+      const pull=`<button type="button" class="btn btn--secondary" id="obs-pull"${obsUi.pulling?' disabled':''}>${obsUi.pulling?'正在检查…':'检查新增事件'}</button>`;
+      const reconnect=obsUi.streamStatus==='reconnecting'?`<button type="button" class="btn btn--secondary" id="obs-reconnect">立即重连实时事件</button>`:'';
+      return rows+errBox+`<div class="button-row" style="margin-top:10px">${more}${pull}${reconnect}</div>`+endMark;
+    }
+    function bindObservability(){
+      const on=(id,fn)=>{const el=$('#'+id);if(el)el.addEventListener('click',fn)};
+      on('obs-more',()=>{if(obsUi.nextCursor)obsLoadPage(obsUi.nextCursor)});
+      on('obs-pull',()=>obsPullNew());
+      on('obs-log-retry',()=>obsReloadLog());
+      on('obs-progress-retry',()=>obsLoadProgress());
+      on('obs-progress-refresh',()=>obsLoadProgress());
+      on('obs-reconnect',()=>{if(obsUi.key)obsOpenStream()});
+    }
     function renderTimeline(events=[]){const recent=events.slice(-6).reverse();if(!recent.length)return '<p style="color:var(--muted)">暂无活动记录。</p>';return `<div class="timeline">${recent.map(e=>`<div class="timeline__item"><strong>${escapeHtml(eventLabel(e))}</strong><time>${formatDate(e.timestamp)}</time></div>`).join('')}</div>`}function eventLabel(e){const x={project_created:'创建工程',step_started:'开始处理',step_succeeded:'完成节点',step_failed:'处理失败',branch_created:'创建分支',retry_started:'开始重试',inspection_completed:'完成画面质检',rework_completed:'完成画面返工'};return `${x[e.type]||'记录进度'}${e.state?' · '+(labels[e.state]||e.state):''}`}function formatDate(v){if(!v)return '—';try{return new Intl.DateTimeFormat('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(v))}catch{return v}}
     async function advance(payload={},endpoint='advance'){
       if(!state.current||jobUi.busy)return;

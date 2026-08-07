@@ -62,10 +62,19 @@ def test_history_ui_has_no_writeback_or_edit_entry() -> None:
 
 
 def test_history_ui_scope_guardrails() -> None:
-    """范围外能力不得出现：无后台轮询、无外部事件流、无前端哈希门禁。"""
+    """范围外能力不得出现：无后台轮询、无前端哈希门禁；事件流仅限 P2-03 监督台。
+
+    P2-03 起 EventSource 由运行监督台按冻结契约合法使用，且只允许出现在
+    obsOpenStream 中；历史时间线区域与其余模块仍不得使用事件流。
+    """
     html = FRONTEND_HTML.read_text(encoding="utf-8")
-    for token in ("EventSource", "setInterval", "Webhook", "webhook", "crypto.subtle"):
+    for token in ("setInterval", "Webhook", "webhook", "crypto.subtle"):
         assert token not in html, f"时间线区域出现范围外能力标记: {token}"
+    script = _script()
+    obs_open = re.search(r"function obsOpenStream\(\)\s*\{[\s\S]*?\n    \}", script)
+    assert obs_open, "缺少 P2-03 监督台的 obsOpenStream"
+    residual = script.replace(obs_open.group(0), "")
+    assert "EventSource" not in residual, "EventSource 只允许出现在 P2-03 监督台 obsOpenStream"
 
 
 def test_history_ui_dom_and_interaction_contract() -> None:
