@@ -57,6 +57,12 @@ class ImmutableRecordError(FileExistsError):
 class LegacyCheckpointReadOnlyError(ValueError):
     """A legacy checkpoint is intact but cannot safely drive execution."""
 
+class BranchVersionConflictError(ValueError):
+    pass
+
+class ActiveJobConflictError(ValueError):
+    pass
+
 
 class EventStore:
     _guards: dict[str, threading.Lock] = {}
@@ -267,13 +273,14 @@ class ProjectStore:
             self._assert_empty_directory_owned_by_claim(*recovery_claim)
         else:
             self.root.mkdir(parents=True, exist_ok=False)
-        manifest = {"format_version": FORMAT_VERSION, "project_id": self.project_id, "current_branch": "main", "current_checkpoint": None, "failed_step": None, "created_at": _now(), "updated_at": _now()}
+        branch_id = f"branch_{uuid4().hex}"
+        manifest = {"format_version": FORMAT_VERSION, "project_id": self.project_id, "current_branch": "main", "current_branch_id": branch_id, "branch_version": 1, "current_checkpoint": None, "failed_step": None, "created_at": _now(), "updated_at": _now()}
         atomic_json(self.root / "manifest.json", manifest)
         if config is None:
             from configs.runtime_policy import RuntimePolicy
             config = {"runtime_policy": RuntimePolicy.from_file(Path("configs/runtime.yaml")).snapshot("offline")}
         atomic_json(self.root / "project.yaml", config)
-        atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "branches": {"main": {"parent": None, "from_checkpoint": None, "created_at": _now()}}})
+        atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "version": 1, "branches": {"main": {"branch_id": branch_id, "name": "main", "parent_branch_id": None, "fork_checkpoint": None, "created_by": "system", "created_at": _now(), "head": None, "status": "active", "version": 1}}})
         self.events.append("project_created", branch="main")
         return manifest
 
@@ -416,6 +423,7 @@ class ProjectStore:
         current = manifest.get("current_checkpoint") or {}
         if current.get("branch") != pointer["branch"] or int(current.get("sequence", 0)) < int(pointer["sequence"]):
             manifest.update(current_branch=pointer["branch"], current_checkpoint=pointer,
+                            branch_version=int(manifest.get("branch_version", 1)) + 1,
                             failed_step=None, updated_at=pending["updated_at"])
             atomic_json(manifest_path, manifest)
         pending_path.unlink()
@@ -448,7 +456,86 @@ class ProjectStore:
                                        "pointer": pointer, "updated_at": updated_at})
             self.checkpoints.save(active, sequence, state, data, execution_cursor=cursor)
             self._recover_checkpoint_commit_locked()
+            self._update_branch_head(active, pointer)
             return relative
+
+    def _branches(self) -> dict[str, Any]:
+        path = self.root / "branches.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        changed = False
+        value.setdefault("version", 1)
+        for name, branch in value.get("branches", {}).items():
+            if "branch_id" not in branch:
+                branch.update(branch_id=f"branch_{content_hash({'project': self.project_id, 'name': name})[:32]}",
+                              name=name, parent_branch_id=None, fork_checkpoint=branch.pop("from_checkpoint", None),
+                              created_by="legacy", head=None, status="active", version=1)
+                branch.pop("parent", None)
+                changed = True
+        if changed:
+            atomic_json(path, value)
+        return value
+
+    def _update_branch_head(self, name: str, pointer: dict[str, Any]) -> None:
+        branches = self._branches()
+        if name not in branches["branches"]:
+            raise CorruptProjectError("当前分支登记不存在。")
+        branch = branches["branches"][name]
+        branch["head"] = pointer
+        branch["version"] = int(branch.get("version", 0)) + 1
+        branches["version"] = int(branches.get("version", 0)) + 1
+        atomic_json(self.root / "branches.json", branches)
+
+    def list_branches(self) -> dict[str, Any]:
+        """Read-only branch projection; never moves manifest/head."""
+        branches = self._branches()
+        manifest = self.manifest()
+        items = []
+        for branch in branches["branches"].values():
+            item = dict(branch)
+            item["current"] = item["branch_id"] == manifest.get("current_branch_id") or item["name"] == manifest.get("current_branch")
+            items.append(item)
+        return {"project_id": self.project_id, "version": int(manifest.get("branch_version", 1)), "items": items}
+
+    def inspect_checkpoint(self, checkpoint: str) -> dict[str, Any]:
+        """Validate and return a checkpoint without changing project state."""
+        candidate = (self.root / checkpoint).resolve()
+        checkpoint_root = (self.root / "checkpoints").resolve()
+        if checkpoint_root not in candidate.parents:
+            raise FileNotFoundError("checkpoint 不属于本工程。")
+        relative = candidate.relative_to(self.root).as_posix()
+        envelope = self.checkpoints.load(relative)
+        if envelope.get("legacy_read_only"):
+            raise LegacyCheckpointReadOnlyError("旧 checkpoint 仅允许历史审计读取；禁止从只读记录创建或切换执行分支。")
+        return envelope
+
+    def _assert_no_active_jobs(self) -> None:
+        from agent_core.jobs import JobStore
+        if JobStore(self.root).active():
+            raise ActiveJobConflictError("工程存在活跃作业，拒绝移动分支 head；请先安全取消并等待结束。")
+
+    def switch_branch(self, branch_id: str, checkpoint: str, *, expected_version: int) -> dict[str, Any]:
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+            self._assert_no_active_jobs()
+            manifest = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+            if int(manifest.get("branch_version", 1)) != expected_version:
+                raise BranchVersionConflictError("分支版本冲突，请刷新后重试。")
+            branches = self._branches()
+            target = next((b for b in branches["branches"].values() if b["branch_id"] == branch_id), None)
+            if target is None:
+                raise FileNotFoundError("目标分支不存在。")
+            source = self.inspect_checkpoint(checkpoint)
+            if source["branch"] != target["name"]:
+                raise ValueError("checkpoint 不属于目标分支。")
+            pointer = {"path": checkpoint, "checksum": source["checksum"], "branch": source["branch"],
+                       "sequence": source["sequence"], "state": source["state"]}
+            manifest.update(current_branch=target["name"], current_branch_id=target["branch_id"],
+                            current_checkpoint=pointer, branch_version=expected_version + 1,
+                            failed_step=None, updated_at=_now())
+            atomic_json(self.root / "manifest.json", manifest)
+            self.events.append("branch_switched", branch_id=branch_id, branch=target["name"], checkpoint=checkpoint,
+                               expected_version=expected_version, version=expected_version + 1)
+            return manifest
 
     @contextmanager
     def _checkpoint_transaction(self) -> Iterator[None]:
@@ -505,22 +592,44 @@ class ProjectStore:
         self.events.append("retry_started", branch=branch, state=failure["state"], from_checkpoint=pointer["path"])
         return execute(failure["state"], self.resume())
 
-    def branch_from(self, checkpoint: str, *, name: str | None = None) -> str:
-        source = self.checkpoints.load(checkpoint)
+    def branch_from(self, checkpoint: str, *, name: str | None = None, actor: str = "system", expected_version: int | None = None) -> str:
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+            return self._branch_from_locked(checkpoint, name=name, actor=actor,
+                                            expected_version=expected_version)
+
+    def _branch_from_locked(self, checkpoint: str, *, name: str | None, actor: str,
+                            expected_version: int | None) -> str:
+        source = self.inspect_checkpoint(checkpoint)
         if source.get("legacy_read_only"):
             raise LegacyCheckpointReadOnlyError("旧 checkpoint 状态不可安全映射；禁止从只读记录创建执行分支。")
         branches_path = self.root / "branches.json"
-        branches = json.loads(branches_path.read_text(encoding="utf-8"))
+        self._assert_no_active_jobs()
+        branches = self._branches()
         branch = name or f"branch-{uuid4().hex[:8]}"
         if branch in branches["branches"]:
             raise ValueError("分支名称已存在。")
-        branches["branches"][branch] = {"parent": source["branch"], "from_checkpoint": checkpoint, "created_at": _now()}
+        manifest = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+        current_version = int(manifest.get("branch_version", 1))
+        if expected_version is not None and expected_version != current_version:
+            raise BranchVersionConflictError("分支版本冲突，请刷新后重试。")
+        parent = branches["branches"].get(source["branch"])
+        if parent is None:
+            raise CorruptProjectError("源 checkpoint 的分支登记不存在。")
+        branch_id = f"branch_{uuid4().hex}"
+        data = json.loads(json.dumps(source["data"]))
+        for key in ("task_spec_confirmation", "inspection", "final_confirmation", "frozen_delivery", "delivery_frozen", "quality_disposition"):
+            data.pop(key, None)
+        relative, checksum = self.checkpoints.save(branch, 1, source["state"], data)
+        pointer = {"path": relative, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}
+        branches["branches"][branch] = {"branch_id": branch_id, "name": branch, "parent_branch_id": parent["branch_id"],
+            "fork_checkpoint": checkpoint, "created_by": actor, "created_at": _now(), "head": pointer, "status": "active", "version": 1}
+        branches["version"] = int(branches.get("version", 0)) + 1
         atomic_json(branches_path, branches)
-        manifest = self.manifest()
-        relative, checksum = self.checkpoints.save(branch, 1, source["state"], source["data"])
-        manifest.update(current_branch=branch, current_checkpoint={"path": relative, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}, failed_step=None, updated_at=_now())
+        manifest.update(current_branch=branch, current_branch_id=branch_id, current_checkpoint=pointer,
+                        branch_version=current_version + 1, failed_step=None, updated_at=_now())
         atomic_json(self.root / "manifest.json", manifest)
-        self.events.append("branch_created", branch=branch, parent=source["branch"], from_checkpoint=checkpoint)
+        self.events.append("branch_created", branch_id=branch_id, branch=branch, parent_branch_id=parent["branch_id"], from_checkpoint=checkpoint, actor=actor)
         return branch
 
     @contextmanager

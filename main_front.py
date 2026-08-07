@@ -85,6 +85,13 @@ class ManualReturnRequest(StrictRequest):
 class BranchRequest(StrictRequest):
     checkpoint: str = Field(min_length=1, max_length=256)
     name: str | None = Field(default=None, min_length=2, max_length=64)
+    actor: str = Field(default="operator", min_length=1, max_length=256)
+    expected_version: int = Field(ge=1)
+
+class BranchSwitchRequest(StrictRequest):
+    branch_id: str = Field(pattern=r"^branch_[a-f0-9]{32}$")
+    checkpoint: str = Field(min_length=1, max_length=256)
+    expected_version: int = Field(ge=1)
 
 
 @app.middleware("http")
@@ -470,10 +477,37 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
             if body.name:
                 _safe_project_id(body.name)
             with store.lock():
-                store.branch_from(body.checkpoint, name=body.name)
-            return _project_view(store)
+                store.branch_from(body.checkpoint, name=body.name, actor=body.actor,
+                                  expected_version=body.expected_version)
+            return {"branches": store.list_branches(), "project": _project_view(store)}
 
         return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/branches")
+async def list_project_branches(project_id: str) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(_store(project_id).list_branches)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/checkpoints/{branch}/{filename}")
+async def inspect_project_checkpoint(project_id: str, branch: str, filename: str) -> dict[str, Any]:
+    """P2-01 read-only inspection; it deliberately has no state mutation path."""
+    try:
+        return await asyncio.to_thread(_store(project_id).inspect_checkpoint,
+                                       f"checkpoints/{branch}/{filename}")
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.post("/api/projects/{project_id}/branches/switch")
+async def switch_project_branch(project_id: str, body: BranchSwitchRequest) -> dict[str, Any]:
+    try:
+        store = _store(project_id)
+        await asyncio.to_thread(store.switch_branch, body.branch_id, body.checkpoint,
+                                expected_version=body.expected_version)
+        return {"branches": store.list_branches(), "project": _project_view(store)}
     except Exception as exc:
         raise _translate_error(exc) from exc
 
