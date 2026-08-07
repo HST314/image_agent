@@ -203,28 +203,18 @@ def _recover_jobs(project_id: str) -> None:
 
 
 def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
-    """仅把生产快照已有等待原因映射为 UI 动作，不执行或替代状态迁移。"""
+    """Project canonical state actions into the legacy HTTP view."""
     if manifest.get("failed_step"):
         return ["retry"]
     if snapshot.get("completed"):
         return ["inspect", "branch"]
-    phase = snapshot.get("phase")
-    if phase == "waiting_clarification":
-        return ["answer_clarification"]
-    if phase == "waiting_master_selection":
-        return ["select_master"]
-    if phase == "waiting_task_spec_confirmation":
-        return ["edit_task_spec", "confirm_task_spec"]
-    if phase == "waiting_final_confirmation":
-        return ["confirm_final", "continue_modifying"]
-    if phase == "waiting_human_rework":
-        return ["human_rework", "branch"]
-    if phase == "waiting_human_approval":
-        return ["review_calibration"]
-    if phase == "waiting_quality_disposition":
-        return ["continue_generation", "manual_rework", "abandon"]
-    if phase == "waiting_reinspection":
-        return ["resume"]
+    from agent_core.workflow import allowed_actions, project_execution_cursor
+    cursor = project_execution_cursor(str(snapshot.get("state") or ""), snapshot)
+    if cursor:
+        actions = list(allowed_actions(str(cursor["product_state"])))
+        if cursor["product_state"] == "human_rework":
+            actions.append("branch")
+        return actions
     if snapshot:
         return ["resume", "branch"]
     return []

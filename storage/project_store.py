@@ -236,6 +236,9 @@ class CheckpointStore:
 class ProjectStore:
     """Own project manifest, branches, prompts, events, artifacts and checkpoints."""
 
+    _checkpoint_guards: dict[str, threading.RLock] = {}
+    _checkpoint_guards_guard = threading.Lock()
+
     def __init__(self, projects_root: str | Path, project_id: str) -> None:
         self.root = Path(projects_root) / project_id
         self.project_id = project_id
@@ -369,14 +372,19 @@ class ProjectStore:
             raise ValueError(f"工程运行模式已固化为 {configured}，不能切换为 {mode}。")
 
     def manifest(self) -> dict[str, Any]:
-        self._recover_checkpoint_commit()
-        data = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+            data = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
         if data.get("format_version") != FORMAT_VERSION:
             raise CorruptProjectError("工程版本不受支持。")
         return data
 
     def _recover_checkpoint_commit(self) -> None:
         """Finish an interrupted checkpoint/event/manifest commit from its WAL."""
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+
+    def _recover_checkpoint_commit_locked(self) -> None:
         pending_path = self.root / "runtime/checkpoint-commit.json"
         if not pending_path.exists():
             return
@@ -409,30 +417,48 @@ class ProjectStore:
         return self.checkpoint(state, context.dump_snapshot(), branch=branch)
 
     def checkpoint(self, state: str, data: dict[str, Any], *, branch: str | None = None) -> str:
-        manifest = self.manifest()
-        active = branch or manifest["current_branch"]
-        previous = manifest.get("current_checkpoint")
-        sequence = 1 if not previous or previous.get("branch") != active else int(previous["sequence"]) + 1
-        relative = f"checkpoints/{active}/{sequence:06d}-{state}.json"
-        transaction_id = uuid4().hex
-        # Write-ahead intent makes the three-file logical commit crash-recoverable.
-        pending_path = self.root / "runtime/checkpoint-commit.json"
-        from agent_core.workflow import project_execution_cursor
-        cursor = project_execution_cursor(state, data)
-        if cursor is None:
-            raise LegacyCheckpointReadOnlyError(f"状态 {state!r} 无法映射到版本化执行游标；拒绝写入。")
-        expected = {"format_version": FORMAT_VERSION, "checkpoint_envelope_version": CHECKPOINT_ENVELOPE_VERSION,
-                    "branch": active, "sequence": sequence, "state": state,
-                    "execution_cursor": cursor,
-                    "compatibility_projection": {"state": state, "phase": data.get("phase")}, "data": data}
-        checksum = content_hash(expected)
-        pointer = {"path": relative, "checksum": checksum, "branch": active, "sequence": sequence, "state": state}
-        updated_at = _now()
-        atomic_json(pending_path, {"format_version": FORMAT_VERSION, "transaction_id": transaction_id,
-                                   "pointer": pointer, "updated_at": updated_at})
-        self.checkpoints.save(active, sequence, state, data, execution_cursor=cursor)
-        self._recover_checkpoint_commit()
-        return relative
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+            manifest = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+            active = branch or manifest["current_branch"]
+            previous = manifest.get("current_checkpoint")
+            sequence = 1 if not previous or previous.get("branch") != active else int(previous["sequence"]) + 1
+            relative = f"checkpoints/{active}/{sequence:06d}-{state}.json"
+            transaction_id = uuid4().hex
+            pending_path = self.root / "runtime/checkpoint-commit.json"
+            from agent_core.workflow import project_execution_cursor
+            cursor = project_execution_cursor(state, data)
+            if cursor is None:
+                raise LegacyCheckpointReadOnlyError(f"状态 {state!r} 无法映射到版本化执行游标；拒绝写入。")
+            expected = {"format_version": FORMAT_VERSION, "checkpoint_envelope_version": CHECKPOINT_ENVELOPE_VERSION,
+                        "branch": active, "sequence": sequence, "state": state,
+                        "execution_cursor": cursor,
+                        "compatibility_projection": {"state": state, "phase": data.get("phase")}, "data": data}
+            checksum = content_hash(expected)
+            pointer = {"path": relative, "checksum": checksum, "branch": active, "sequence": sequence, "state": state}
+            updated_at = _now()
+            atomic_json(pending_path, {"format_version": FORMAT_VERSION, "transaction_id": transaction_id,
+                                       "pointer": pointer, "updated_at": updated_at})
+            self.checkpoints.save(active, sequence, state, data, execution_cursor=cursor)
+            self._recover_checkpoint_commit_locked()
+            return relative
+
+    @contextmanager
+    def _checkpoint_transaction(self) -> Iterator[None]:
+        """Serialize WAL recovery and commit across store instances/processes."""
+        key = str(self.root.resolve())
+        with self._checkpoint_guards_guard:
+            guard = self._checkpoint_guards.setdefault(key, threading.RLock())
+        with guard:
+            lock_path = self.root / "runtime/checkpoint-commit.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     def start_step(self, state: str, **details: Any) -> None:
         self.events.append("step_started", branch=self.manifest()["current_branch"], state=state, **details)

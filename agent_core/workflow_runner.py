@@ -11,7 +11,7 @@ from agent_core.batch import CandidateBatchGenerator
 from agent_core.models import ImageTaskCard, ModelRole, StyleIdeaCard, TaskSpecification, VisualCheckResult, VisualInspectionOutput
 from agent_core.structured_output import RecoverableStructuredOutputError, validate_with_one_repair
 from agent_core.state_machine import RecoverableWorkflow
-from agent_core.workflow import STATE_DEFINITIONS, TRANSITIONS, SelfCheckPolicy, validate_transition
+from agent_core.workflow import STATE_DEFINITIONS, SelfCheckPolicy, handler_for, legacy_handler_order, validate_product_successor, validate_transition
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
 from interaction.confirmation_builder import specification_from_task, specification_to_markdown, update_specification_from_markdown
 from interaction.question_generator import generate_question_card
@@ -125,18 +125,7 @@ class RunnerOptions:
 class WorkflowRunner:
     """Run registered real handlers and checkpoint every successful boundary."""
 
-    ORDER = ("intake_clarify", "confirmation_build", "initial_candidate_generation",
-             "master_candidate_selection", "self_check_iteration", "human_prompt_iteration", "final_approval")
-    CURSOR_HANDLERS = {
-        "received": "intake_clarify", "clarifying": "intake_clarify",
-        "task_spec_building": "confirmation_build", "waiting_task_spec_confirmation": "confirmation_build",
-        "category_analysis": "initial_candidate_generation", "style_selection_vlm": "initial_candidate_generation",
-        "five_candidate_generation": "initial_candidate_generation",
-        "waiting_master_selection": "master_candidate_selection",
-        "quality_rework": "self_check_iteration", "waiting_human_decision": "self_check_iteration",
-        "human_rework": "human_prompt_iteration", "reinspection": "self_check_iteration",
-        "waiting_final_confirmation": "final_approval", "delivery_frozen": "final_approval",
-    }
+    ORDER = legacy_handler_order()
 
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  runtime_policy: RuntimePolicy | None = None,
@@ -154,12 +143,13 @@ class WorkflowRunner:
         self.progress = progress or (lambda _completed, _total, _unit: None)
         self.presenter = Presenter()
         self.workflow = RecoverableWorkflow(store)
-        self.handlers: dict[str, Handler] = {
-            "intake_clarify": self._clarify, "confirmation_build": self._confirmation,
-            "initial_candidate_generation": self._candidates, "master_candidate_selection": self._selection,
-            "self_check_iteration": self._self_check, "human_prompt_iteration": self._human_rework,
-            "final_approval": self._final,
-        }
+        self.handlers: dict[str, Handler] = {}
+        for definition in STATE_DEFINITIONS.values():
+            handler = definition["handler"]
+            implementation = getattr(self, definition["implementation"])
+            existing = self.handlers.setdefault(handler, implementation)
+            if existing != implementation:
+                raise ValueError(f"状态目录中的处理器 {handler!r} 实现发生漂移。")
 
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
@@ -171,7 +161,7 @@ class WorkflowRunner:
             if product_state == "delivery_frozen":
                 raise ValueError("工程已经完成最终确认。")
             try:
-                return self.CURSOR_HANDLERS[product_state]
+                return handler_for(product_state)
             except KeyError as exc:
                 raise ValueError(f"产品状态 {product_state!r} 没有可执行处理器。") from exc
         if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection", "waiting_quality_disposition"}:
@@ -202,6 +192,7 @@ class WorkflowRunner:
             cursor_handler = str(cursor["handler"])
             if str(snapshot.get("state") or "") != cursor_handler:
                 raise ValueError("检查点执行游标与兼容 state 投影不一致，拒绝执行。")
+            validate_product_successor(product_state, target)
         while True:
             current = str(data.get("state", ""))
             if current and current != target:
