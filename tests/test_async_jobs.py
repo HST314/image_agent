@@ -66,6 +66,20 @@ def test_job_persists_heartbeat_progress_and_cancel_requested(tmp_path: Path) ->
     assert jobs.finish(job["job_id"])["status"] == "cancelled"
 
 
+def test_legacy_job_is_migrated_under_lock(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "legacy-job")
+    store.create()
+    path = store.root / "runtime/jobs.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "jobs": {"old": {
+        "job_id": "old", "idempotency_key": "legacy-key", "payload_hash": "hash",
+        "payload": {}, "status": "queued", "created_at": "then", "updated_at": "then"
+    }}}), encoding="utf-8")
+    migrated = JobStore(store.root).get("old")
+    assert migrated["progress"] == {"completed": 0, "total": 1, "unit": "workflow"}
+    assert migrated["heartbeat_at"] is None and migrated["attempt"] == 0
+
+
 def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "slots")
     store.create()

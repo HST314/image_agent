@@ -5,9 +5,13 @@ from typing import Any, Callable
 from storage.project_store import ProjectStore, content_hash
 
 class CandidateBatchGenerator:
-    def __init__(self, store: ProjectStore, render: Callable[[int], dict[str, Any]], *, attempts: int = 2, max_workers: int = 5) -> None:
+    def __init__(self, store: ProjectStore, render: Callable[[int], dict[str, Any]], *, attempts: int = 2, max_workers: int = 5,
+                 should_cancel: Callable[[], bool] | None = None,
+                 on_progress: Callable[[int, int], None] | None = None) -> None:
         self.store, self.render, self.attempts = store, render, attempts
         self.max_workers = max(1, min(5, max_workers))
+        self.should_cancel = should_cancel or (lambda: False)
+        self.on_progress = on_progress or (lambda _completed, _total: None)
 
     def generate(self, input_hash: str, *, count: int = 5, slot_identities: list[str] | None = None) -> dict[str, list[Any]]:
         if slot_identities is not None and len(slot_identities) != count:
@@ -22,10 +26,13 @@ class CandidateBatchGenerator:
                 cached = next((e.get("asset") for e in reversed(events) if e.get("type") == "candidate_succeeded" and e.get("idempotency_key") == key), None)
                 if cached: successes.append(cached); continue
                 pending.append((index, key))
+            self.on_progress(len(successes), count)
 
             def one(index: int, key: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
                 error: Exception | None = None
                 for attempt in range(1, self.attempts + 1):
+                    if self.should_cancel():
+                        return None, {"index": index, "error": "cancel_requested", "idempotency_key": key, "cancelled": True}
                     try:
                         asset = self.render(index)
                         self.store.events.append("candidate_succeeded", index=index, attempt=attempt, asset=asset, idempotency_key=key)
@@ -40,6 +47,7 @@ class CandidateBatchGenerator:
                     asset, failure = future.result()
                     if asset is not None: successes.append(asset)
                     if failure is not None: failures.append(failure)
+                    self.on_progress(len(successes), count)
             successes.sort(key=lambda item: int(item.get("candidate_index", item.get("uri", 0))) if str(item.get("candidate_index", item.get("uri", 0))).isdigit() else 0)
             failures.sort(key=lambda item: item["index"])
         return {"succeeded": successes, "failed": failures}

@@ -176,8 +176,15 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
         snapshot = store.resume()
         if snapshot is None:
             raise ValueError("工程还没有可恢复节点。")
-        _runner(store, payload["mode"] == "offline").run(snapshot, _options(body))
-        jobs.heartbeat(job["job_id"], completed=1, total=1, unit="workflow")
+        runner = _runner(store, payload["mode"] == "offline")
+        runner.should_cancel = lambda: jobs.cancellation_requested(job["job_id"])
+        runner.progress = lambda completed, total, unit: jobs.heartbeat(
+            job["job_id"], completed=completed, total=total, unit=unit
+        )
+        runner.run(snapshot, _options(body))
+        if not jobs.cancellation_requested(job["job_id"]):
+            current = jobs.get(job["job_id"])["progress"]
+            jobs.heartbeat(job["job_id"], completed=current["total"], total=current["total"], unit=current["unit"])
         finished = jobs.finish(job["job_id"])
         store.events.append("job_finished", job_id=job["job_id"], status=finished["status"])
     except Exception as exc:

@@ -130,7 +130,9 @@ class WorkflowRunner:
 
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  runtime_policy: RuntimePolicy | None = None,
-                 output: Callable[[str], None] | None = None) -> None:
+                 output: Callable[[str], None] | None = None,
+                 should_cancel: Callable[[], bool] | None = None,
+                 progress: Callable[[int, int, str], None] | None = None) -> None:
         self.store = store
         self.policy = runtime_policy or RuntimePolicy.from_file(Path("configs/runtime.yaml"))
         self.store.assert_runtime_mode("offline" if offline_mode else "real")
@@ -138,6 +140,8 @@ class WorkflowRunner:
         self.gateway = RuntimeModelGateway(store, ModelRouter.from_file(config), executor=executor, offline_mode=offline_mode)
         self.offline_mode = offline_mode
         self.output = output or (lambda _: None)
+        self.should_cancel = should_cancel or (lambda: False)
+        self.progress = progress or (lambda _completed, _total, _unit: None)
         self.presenter = Presenter()
         self.workflow = RecoverableWorkflow(store)
         self.handlers: dict[str, Handler] = {
@@ -323,6 +327,8 @@ class WorkflowRunner:
         style_audit: list[dict[str, Any]] = []
 
         def render(index: int) -> dict[str, Any]:
+            if self.should_cancel():
+                raise RuntimeError("作业已请求取消，未开始的供应商调用已停止。")
             idea = idea_cards[index] if index < len(idea_cards) else None
             if idea is None:
                 raise ValueError(f"候选槽位 {index} 缺少已绑定的 VLM 风格理解。")
@@ -345,7 +351,9 @@ class WorkflowRunner:
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
 
         batch = CandidateBatchGenerator(self.store, render, attempts=self.policy.max_render_retries + 1,
-                                        max_workers=self.policy.candidate_concurrency).generate(
+                                        max_workers=self.policy.candidate_concurrency,
+                                        should_cancel=self.should_cancel,
+                                        on_progress=lambda completed, total: self.progress(completed, total, "candidate")).generate(
                                             spec.content_hash, count=self.policy.candidate_count,
                                             slot_identities=slot_identities)
         if batch["failed"]: 

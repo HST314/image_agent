@@ -42,7 +42,15 @@ class JobStore:
         descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
-            data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {"version": 1, "jobs": {}}
+            data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {"version": 2, "jobs": {}}
+            # Read-time, locked migration keeps pre-P1 job files resumable and
+            # makes every subsequently returned record satisfy AsyncJob v1.
+            data["version"] = 2
+            for job in data.setdefault("jobs", {}).values():
+                job.setdefault("cancel_requested", job.get("status") == "cancel_requested")
+                job.setdefault("progress", {"completed": 0, "total": 1, "unit": "workflow"})
+                job.setdefault("heartbeat_at", None)
+                job.setdefault("attempt", 0)
             result = mutate(data)
             atomic_json(self.path, data)
             return result
@@ -131,6 +139,10 @@ class JobStore:
                 job["updated_at"] = _now()
             return dict(job)
         return self._locked(mutate)
+
+    def cancellation_requested(self, job_id: str) -> bool:
+        """Cheap cooperative-cancellation probe for unit boundaries."""
+        return bool(self.get(job_id).get("cancel_requested"))
 
     def recoverable(self) -> list[str]:
         def mutate(data: dict[str, Any]) -> list[str]:

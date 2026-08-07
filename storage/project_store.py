@@ -346,10 +346,35 @@ class ProjectStore:
             raise ValueError(f"工程运行模式已固化为 {configured}，不能切换为 {mode}。")
 
     def manifest(self) -> dict[str, Any]:
+        self._recover_checkpoint_commit()
         data = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
         if data.get("format_version") != FORMAT_VERSION:
             raise CorruptProjectError("工程版本不受支持。")
         return data
+
+    def _recover_checkpoint_commit(self) -> None:
+        """Finish an interrupted checkpoint/event/manifest commit from its WAL."""
+        pending_path = self.root / "runtime/checkpoint-commit.json"
+        if not pending_path.exists():
+            return
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        pointer = pending["pointer"]
+        # The immutable checkpoint must exist and validate before it can become visible.
+        envelope = self.checkpoints.load(pointer["path"])
+        if envelope["checksum"] != pointer["checksum"]:
+            raise CorruptProjectError("待恢复检查点哈希不一致。")
+        transaction_id = pending["transaction_id"]
+        if not any(event.get("transaction_id") == transaction_id for event in self.events.read_all()):
+            self.events.append("step_succeeded", branch=pointer["branch"], state=pointer["state"],
+                               checkpoint=pointer["path"], transaction_id=transaction_id)
+        manifest_path = self.root / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        current = manifest.get("current_checkpoint") or {}
+        if current.get("branch") != pointer["branch"] or int(current.get("sequence", 0)) < int(pointer["sequence"]):
+            manifest.update(current_branch=pointer["branch"], current_checkpoint=pointer,
+                            failed_step=None, updated_at=pending["updated_at"])
+            atomic_json(manifest_path, manifest)
+        pending_path.unlink()
 
     def checkpoint_context(self, state: str, context: Any, *, branch: str | None = None) -> str:
         return self.checkpoint(state, context.dump_snapshot(), branch=branch)
@@ -359,11 +384,18 @@ class ProjectStore:
         active = branch or manifest["current_branch"]
         previous = manifest.get("current_checkpoint")
         sequence = 1 if not previous or previous.get("branch") != active else int(previous["sequence"]) + 1
-        relative, checksum = self.checkpoints.save(active, sequence, state, data)
+        relative = f"checkpoints/{active}/{sequence:06d}-{state}.json"
+        transaction_id = uuid4().hex
+        # Write-ahead intent makes the three-file logical commit crash-recoverable.
+        pending_path = self.root / "runtime/checkpoint-commit.json"
+        expected = {"format_version": FORMAT_VERSION, "branch": active, "sequence": sequence, "state": state, "data": data}
+        checksum = content_hash(expected)
         pointer = {"path": relative, "checksum": checksum, "branch": active, "sequence": sequence, "state": state}
-        manifest.update(current_branch=active, current_checkpoint=pointer, failed_step=None, updated_at=_now())
-        atomic_json(self.root / "manifest.json", manifest)
-        self.events.append("step_succeeded", branch=active, state=state, checkpoint=relative)
+        updated_at = _now()
+        atomic_json(pending_path, {"format_version": FORMAT_VERSION, "transaction_id": transaction_id,
+                                   "pointer": pointer, "updated_at": updated_at})
+        self.checkpoints.save(active, sequence, state, data)
+        self._recover_checkpoint_commit()
         return relative
 
     def start_step(self, state: str, **details: Any) -> None:

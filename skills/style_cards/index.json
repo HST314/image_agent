@@ -1,9 +1,9 @@
 {
   "items": [
-    { "style_id": "style_composed_grid", "style_index": "STYLE-001", "path": "style_composed_grid.json", "priority": 1 },
-    { "style_id": "style_focal_depth", "style_index": "STYLE-002", "path": "style_focal_depth.json", "priority": 2 },
-    { "style_id": "style_editorial_flow", "style_index": "STYLE-003", "path": "style_editorial_flow.json", "priority": 3 },
-    { "style_id": "style_spatial_layers", "style_index": "STYLE-004", "path": "style_spatial_layers.json", "priority": 4 },
-    { "style_id": "style_minimal_signal", "style_index": "STYLE-005", "path": "style_minimal_signal.json", "priority": 5 }
+    { "style_id": "style_composed_grid", "style_index": "STYLE-001", "version": "1.0", "versions": {"1.0": "style_composed_grid.json"}, "path": "style_composed_grid.json", "priority": 1 },
+    { "style_id": "style_focal_depth", "style_index": "STYLE-002", "version": "1.0", "versions": {"1.0": "style_focal_depth.json"}, "path": "style_focal_depth.json", "priority": 2 },
+    { "style_id": "style_editorial_flow", "style_index": "STYLE-003", "version": "1.0", "versions": {"1.0": "style_editorial_flow.json"}, "path": "style_editorial_flow.json", "priority": 3 },
+    { "style_id": "style_spatial_layers", "style_index": "STYLE-004", "version": "1.0", "versions": {"1.0": "style_spatial_layers.json"}, "path": "style_spatial_layers.json", "priority": 4 },
+    { "style_id": "style_minimal_signal", "style_index": "STYLE-005", "version": "1.0", "versions": {"1.0": "style_minimal_signal.json"}, "path": "style_minimal_signal.json", "priority": 5 }
   ]
 }
