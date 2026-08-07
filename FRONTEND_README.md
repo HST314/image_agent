@@ -38,9 +38,32 @@ python3 -m pytest -q tests
 # 新增适配层测试
 python3 -m pytest -q frontend_tests
 
+# P1-08 圈画微调 UI 契约测试（需要 node；含 Node DOM shim 交互驱动）
+python3 -m pytest -q tests/test_p1_08_guided_edit_ui.py
+
 # Python 语法检查
 python3 -m py_compile main_front.py
 ```
+
+## 圈画微调（P1-08 前端）
+
+`waiting_human_rework` 相位渲染圈画编辑器：矩形与自由画笔、颜色、粗细、撤销/清空、
+指导图预览（画布叠加在当前资产图上，与服务端合成同源数据）和自由文本 Prompt。
+
+- **坐标语义**：标注只以 `source_image_pixels` 保存与提交。画布精确覆盖
+  `object-fit: contain` 的实际内容区域，CSS 坐标按 `source/rendered` 比例反算并钳制在
+  原图边界内；DPR 只影响画布 backing store，不进入提交坐标。横图、竖图、超宽图的
+  letterbox 偏移由 `geFitRect` 统一处理。
+- **提交契约**：`POST /api/projects/{project_id}/advance` 携带冻结的 `guided_edit`
+  （当前分支、当前头资产、原图宽高、连续轮次、actor、非空 Prompt）与按载荷派生的稳定
+  `idempotency_key`；重复点击在请求中被禁用，同一载荷重试键不变。项目/分支/头资产/幂等
+  安全门禁由服务端独占执行，前端不复制。
+- **状态**：提交中/失败/成功均有真实状态文案；成功后轮询 job 并重新拉取工程视图，
+  新图进入 `waiting_reinspection`，旧质检与旧最终确认不再可用。
+- **草稿**：未提交标注与 Prompt 按 `ge-draft:{project_id}:{asset_id}` 存入
+  sessionStorage，刷新同资产可恢复，换图不串稿；提交成功即清除。
+- **降级**：当前资产不是受控 artifact（如离线 mock）时不渲染画布，仅保留文字微调；
+  图像载入失败显示可恢复提示。
 
 ## 安全边界
 
