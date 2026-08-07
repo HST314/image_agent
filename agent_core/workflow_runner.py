@@ -25,6 +25,10 @@ from interaction.presenter import Presenter
 from configs.runtime_policy import RuntimePolicy
 from model_router.executor import ModelExecutor
 
+
+class SkillLoadError(RuntimeError):
+    """A required external skill could not be loaded safely."""
+
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
 
@@ -166,6 +170,7 @@ class WorkflowRunner:
         
         # 1. 匹配广告品类 Skill
         category_skill = None
+        degraded_reasons: list[dict[str, str]] = []
         try:
             from skills.category_library_adapter import CategoryLibraryAdapter
             lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
@@ -174,8 +179,8 @@ class WorkflowRunner:
                 match = adapter.load_for_task(task_card)
                 if match:
                     category_skill = match.skill
-        except Exception:
-            pass
+        except Exception as exc:
+            self._handle_skill_failure("category_library", exc, degraded_reasons)
 
         # 2. 从艺术风格库筛选 5 种不同机制的方向，并生成文本卡片
         from skills.style_loader import StyleCardLoader
@@ -186,13 +191,15 @@ class WorkflowRunner:
             style_path = Path(__file__).parent.parent / "skills/style_cards/index.json"
             if style_path.exists():
                 style_cards = StyleCardLoader(style_path).select_distinct(count=self.policy.candidate_count)
-        except Exception:
-            pass
+            if len(style_cards) != self.policy.candidate_count:
+                raise ValueError("风格库未返回策略要求数量的已批准风格卡。")
+        except Exception as exc:
+            self._handle_skill_failure("style_library", exc, degraded_reasons)
 
         # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
         from interaction.approval_gate import TaskConfirmationDoc
         doc = TaskConfirmationDoc(task_id=task_card.task_id, confirmed_facts=[], default_handling_for_unknowns=[])
-        idea_cards = StyleIdeaGenerator(offline_mode=True).generate(
+        idea_cards = StyleIdeaGenerator(offline_mode=self.offline_mode).generate(
             task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=self.policy.candidate_count
         )
 
@@ -228,7 +235,18 @@ class WorkflowRunner:
                                             spec.content_hash, count=self.policy.candidate_count)
         if batch["failed"]: 
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
-        return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards]}
+        return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards],
+                "skill_status": "degraded" if degraded_reasons else "ready",
+                "skill_degradation_reasons": degraded_reasons}
+
+    def _handle_skill_failure(self, skill: str, exc: Exception, reasons: list[dict[str, str]]) -> None:
+        reason = {"skill": skill, "code": type(exc).__name__, "message": str(exc)}
+        if self.policy.skill_failure_mode != "allow_degraded":
+            self.store.events.append("skill_load_blocked", **reason, retryable=True)
+            raise SkillLoadError(f"必需 Skill {skill} 加载失败：{exc}") from exc
+        reasons.append(reason)
+        self.store.events.append("skill_degraded", **reason, visible=True)
+        self.output(f"警告：Skill {skill} 已按运行策略降级：{exc}")
 
     def _selection(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         selected = options.get("selected_id")

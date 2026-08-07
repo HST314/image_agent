@@ -299,6 +299,10 @@ intake_clarify
 
 领域层使用稳定的 Pydantic V2 英文契约，`interaction/presenter.py` 将其渲染为终端用户可理解的中文：
 
+主/子 Agent 边界固定为 `DesignTaskEnvelope v1` 与 `DesignDeliveryEnvelope v1`。入站信封原文保存在 checkpoint，`idempotency_key` 在工程根目录原子登记；重复提交返回首次创建的工程，不会重复创建作业或触发付费调用，同键不同内容会被拒绝。第一阶段对外交付接口 `GET /api/projects/{project_id}/delivery` 只返回稳定最终图片引用与简短设计说明，最终确认和 trace 引用继续保存在工程内部。
+
+Skill 故障行为由 `runtime.yaml` 的 `skill_failure_mode` 控制，默认 `block`：必需 Skill 加载失败会写入 `skill_load_blocked` 并在付费生图前停止。只有显式配置 `allow_degraded` 时才能继续，且 checkpoint、事件和用户输出都会显示降级原因。
+
 ```text
 领域模型 / Checkpoint ──→ Presenter ──→ 中文问题、候选图、质检结论、历史
                               │

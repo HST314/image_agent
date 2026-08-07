@@ -16,10 +16,10 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agent_core.models import ImageTaskCard
+from agent_core.models import DesignDeliveryEnvelope, DesignTaskEnvelope, ImageTaskCard
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
-from storage.project_store import ProjectStore
+from storage.project_store import ProjectStore, content_hash
 from configs.runtime_policy import RuntimePolicy
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
@@ -49,8 +49,9 @@ class StrictRequest(BaseModel):
 
 class CreateProjectRequest(StrictRequest):
     project_id: str = Field(min_length=2, max_length=64)
-    task_card: dict[str, Any]
+    task_card: dict[str, Any] | None = None
     offline: bool = False
+    envelope: dict[str, Any] | None = None
 
 
 class AdvanceRequest(StrictRequest):
@@ -213,18 +214,49 @@ async def list_projects() -> dict[str, Any]:
 async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
     project_id = _safe_project_id(body.project_id)
     try:
-        task = ImageTaskCard.model_validate(body.task_card)
+        envelope = DesignTaskEnvelope.model_validate(body.envelope) if body.envelope else None
+        if not envelope and body.task_card is None:
+            raise ValueError("task_card 或 envelope 必须提供一个。")
+        task = envelope.task if envelope else ImageTaskCard.model_validate(body.task_card)
         if task.project_id != project_id:
             task = task.model_copy(update={"project_id": project_id})
 
         def execute() -> dict[str, Any]:
+            raw_hash = content_hash(body.envelope) if envelope else None
+            if envelope:
+                claimed_project, newly_claimed = ProjectStore.claim_design_task(PROJECTS_ROOT, project_id, envelope.idempotency_key, raw_hash)
+                claimed_store = _store(claimed_project)
+                if not newly_claimed and (claimed_store.root / "manifest.json").exists():
+                    return _project_view(claimed_store)
+                if not newly_claimed:
+                    raise ValueError("同一幂等任务正在创建中，请稍后重试。")
             store = _store(project_id)
             policy = RuntimePolicy.from_file(RUNTIME_CONFIG)
-            store.create({"runtime_policy": policy.snapshot("offline" if body.offline else "real")})
-            _runner(store, body.offline).run({"task_card": task.model_dump(mode="json")}, RunnerOptions())
+            metadata = {"runtime_policy": policy.snapshot("offline" if body.offline else "real")}
+            if envelope:
+                metadata.update({"design_task_schema_version": envelope.schema_version,
+                                 "idempotency_key": envelope.idempotency_key,
+                                 "raw_task_sha256": raw_hash})
+            store.create(metadata)
+            _runner(store, body.offline).run({"task_card": task.model_dump(mode="json"),
+                "raw_design_task_envelope": body.envelope if envelope else None}, RunnerOptions())
             return _project_view(store)
 
         return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/delivery", response_model=DesignDeliveryEnvelope)
+async def get_delivery(project_id: str) -> DesignDeliveryEnvelope:
+    """Return only the frozen final image and short note; internal trace stays local."""
+    try:
+        snapshot = _store(project_id).resume() or {}
+        if not snapshot.get("delivery_frozen") or not snapshot.get("final_asset"):
+            raise ValueError("交付尚未最终确认并冻结。")
+        asset = snapshot["final_asset"]
+        return DesignDeliveryEnvelope(final_image={"artifact_id": asset["artifact_id"], "uri": asset["uri"], "sha256": asset["sha256"]},
+                                      design_note=str(snapshot.get("design_note") or "已按确认任务书完成设计并通过最终确认。"))
     except Exception as exc:
         raise _translate_error(exc) from exc
 

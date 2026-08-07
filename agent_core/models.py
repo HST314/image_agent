@@ -140,6 +140,32 @@ class ImageTaskCard(StrictBaseModel):
         return value
 
 
+class DesignTaskEnvelope(StrictBaseModel):
+    """Versioned, immutable task submitted by the parent agent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    task: ImageTaskCard
+
+
+class FinalImageRef(StrictBaseModel):
+    """Stable controlled-asset reference exposed in a delivery."""
+
+    artifact_id: str = Field(pattern=r"^artifact_[a-f0-9]{64}$")
+    uri: str = Field(pattern=r"^artifact://artifact_[a-f0-9]{64}$")
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class DesignDeliveryEnvelope(StrictBaseModel):
+    """Minimal first-phase response visible to the parent agent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    final_image: FinalImageRef
+    design_note: str = Field(min_length=1, max_length=2000)
+
+
 class QuestionOption(StrictBaseModel):
     """One mutually exclusive answer option."""
 
