@@ -462,7 +462,14 @@ async def project_events(project_id: str, request: Request, after: int = 0) -> S
         nonlocal cursor
         idle = 0
         while idle < 150 and not await request.is_disconnected():
-            page = event_page(store.events, limit=100, since=cursor)
+            try:
+                page = event_page(store.events, limit=100, since=cursor)
+            except Exception:
+                trace_id = f"trace_{uuid4().hex}"
+                error = {"code": "OBSERVABILITY_UNAVAILABLE", "trace_id": trace_id,
+                         "message": "事件数据暂不可读取。"}
+                yield f"event: observability_error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n"
+                return
             events = page["items"]
             if events:
                 idle = 0

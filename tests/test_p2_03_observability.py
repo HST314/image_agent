@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -17,6 +18,15 @@ def _project(tmp_path: Path, name: str = "observability") -> ProjectStore:
     store = ProjectStore(tmp_path, name)
     store.create()
     return store
+
+
+def _append_large_log(store: ProjectStore, count: int) -> None:
+    with store.events.path.open("a", encoding="utf-8") as stream:
+        start = store.events.last_sequence() + 1
+        for sequence in range(start, start + count):
+            stream.write(json.dumps({"format_version": 1, "event_id": f"event-{sequence}",
+                                     "sequence": sequence, "timestamp": "2026-01-01T00:00:00Z",
+                                     "type": "tick", "slot": sequence % 5}) + "\n")
 
 
 def test_stable_pages_since_and_concurrent_append_have_no_gaps_or_duplicates(tmp_path: Path) -> None:
@@ -48,6 +58,64 @@ def test_event_bounds_bad_cursor_and_streaming_reader(tmp_path: Path, monkeypatc
         event_page(store.events, cursor="x", since=1)
     with pytest.raises(ValueError, match="since"):
         event_page(store.events, since=9999)
+
+
+def test_large_frozen_window_is_read_completely_by_cursor_without_gaps(tmp_path: Path) -> None:
+    store = _project(tmp_path)
+    _append_large_log(store, 10_001)
+    first = event_page(store.events, limit=100)
+    store.events.append("concurrent_append")
+    pages = [first]
+    while pages[-1]["next_cursor"]:
+        pages.append(event_page(store.events, limit=100, cursor=pages[-1]["next_cursor"]))
+    sequences = [item["sequence"] for page in pages for item in page["items"]]
+    assert sequences == list(range(1, first["through_sequence"] + 1))
+    assert len(sequences) == len(set(sequences))
+    assert store.events.last_sequence() == first["through_sequence"] + 1
+
+
+def test_large_stale_since_catches_up_in_bounded_pages(tmp_path: Path) -> None:
+    store = _project(tmp_path)
+    _append_large_log(store, 10_001)
+    page = event_page(store.events, limit=100, since=1)
+    sequences: list[int] = []
+    page_sizes: list[int] = []
+    while True:
+        sequences.extend(item["sequence"] for item in page["items"])
+        page_sizes.append(len(page["items"]))
+        if not page["next_cursor"]:
+            break
+        page = event_page(store.events, limit=100, cursor=page["next_cursor"])
+    assert sequences == list(range(2, store.events.last_sequence() + 1))
+    assert max(page_sizes) == 100
+
+
+def test_sse_stale_resume_yields_bounded_backlog_without_stream_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _project(tmp_path, "sse-large")
+    _append_large_log(store, 10_001)
+    monkeypatch.setattr(main_front, "PROJECTS_ROOT", tmp_path)
+
+    class RequestStub:
+        headers = {"last-event-id": "1"}
+
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def consume_first_batch() -> list[str]:
+        response = await main_front.project_events("sse-large", RequestStub(), after=0)
+        chunks: list[str] = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            if len(chunks) == 100:
+                break
+        return chunks
+
+    chunks = asyncio.run(consume_first_batch())
+    assert len(chunks) == 100
+    assert chunks[0].startswith("id: 2\n")
+    assert chunks[-1].startswith("id: 101\n")
+    assert not any("observability_error" in chunk for chunk in chunks)
 
 
 def test_public_dto_is_allowlisted_and_nested_secrets_payloads_paths_and_pii_never_escape(tmp_path: Path) -> None:

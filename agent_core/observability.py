@@ -10,7 +10,6 @@ from typing import Any
 from storage.project_store import EventStore
 
 MAX_EVENT_PAGE = 100
-MAX_EVENT_SPAN = 10_000
 _CURSOR_VERSION = 1
 _TRACE = re.compile(r"^trace_[a-f0-9]{32}$")
 _SAFE_STATUS = {"queued", "running", "succeeded", "failed", "cancel_requested", "cancelled",
@@ -93,15 +92,13 @@ def event_page(events: EventStore, *, limit: int = 50, cursor: str | None = None
     high = events.last_sequence()
     if cursor:
         after, through = _decode(cursor)
-        if through > high or through - after > MAX_EVENT_SPAN:
+        if through > high:
             raise ValueError("事件游标超出允许查询范围。")
     else:
         after = int(since or 0)
         if after < 0 or after > high:
             raise ValueError("since 超出事件范围。")
         through = high
-        if through - after > MAX_EVENT_SPAN:
-            raise ValueError(f"事件查询跨度不能超过 {MAX_EVENT_SPAN}。")
     raw, _ = events.scan(after=after, through=through, limit=limit + 1)
     visible = raw[:limit]
     next_cursor = _cursor(int(visible[-1]["sequence"]), through) if len(raw) > limit else None
