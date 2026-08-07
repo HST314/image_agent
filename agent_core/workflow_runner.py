@@ -206,7 +206,9 @@ class WorkflowRunner:
             if len(style_cards) != self.policy.candidate_count:
                 raise ValueError("风格库未返回策略要求数量的已批准风格卡。")
         except Exception as exc:
-            self._handle_skill_failure("style_library", exc, degraded_reasons)
+            reason = {"skill": "style_library", "code": type(exc).__name__, "message": str(exc)}
+            self.store.events.append("skill_load_blocked", **reason, retryable=True)
+            raise SkillLoadError(f"必需 Skill style_library 加载失败：{exc}") from exc
 
         # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
         from interaction.approval_gate import TaskConfirmationDoc

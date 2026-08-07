@@ -27,8 +27,13 @@ class StyleIdeaGenerator:
     ) -> list[StyleIdeaCard]:
         """Generate one idea card for each selected style card."""
 
+        if len(style_cards) != count:
+            raise ValueError(f"Exactly {count} validated style directory entries are required.")
+        identities = {(card.style_id, card.style_index) for card in style_cards}
+        if len(identities) != count or len({card.style_id for card in style_cards}) != count or len({card.style_index for card in style_cards}) != count:
+            raise ValueError("Style directory selection contains duplicate entries.")
         cards: list[StyleIdeaCard] = []
-        for style_card in style_cards[:count]:
+        for style_card in style_cards:
             cards.append(
                 self._generate_one(
                     task_card=task_card,
@@ -100,7 +105,7 @@ class StyleIdeaGenerator:
             title=style_card.style_name or style_card.style_id,
             composition=style_card.composition,
             material=material,
-            fit_reason=f"适用于任务目标与使用场景；目录标注适用范围为：{'、'.join(style_card.best_for)}。",
+            fit_reason=f"{style_card.summary}；适用于任务目标与使用场景；目录标注适用范围为：{'、'.join(style_card.best_for)}。",
             artistic_philosophy=f"以“{style_card.style_name}”建立信息秩序，在表达效率与视觉辨识度之间保持平衡。",
             adaptable_mechanism=f"借鉴{style_card.composition}，以及{material}；不复制参考图的具体主体或独特表达。",
             major_risk=risk,

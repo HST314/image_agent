@@ -64,6 +64,8 @@ class StyleCardLoader:
         normalized_task = task_text.lower()
         ranked: list[tuple[int, int, StyleCard]] = []
         for priority, card in self._approved_cards():
+            if any(term.lower() in normalized_task for term in card.avoid_for):
+                continue
             hints = [card.style_name or "", *card.tags, *card.best_for]
             score = sum(1 for hint in hints if hint.lower() in normalized_task)
             ranked.append((-score, priority, card))
