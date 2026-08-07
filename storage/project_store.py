@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
 import shutil
@@ -62,6 +63,18 @@ class BranchVersionConflictError(ValueError):
 
 class ActiveJobConflictError(ValueError):
     pass
+
+HISTORY_FACT_FIELDS = (
+    "raw_design_task_envelope", "task_specification", "task_spec_confirmation",
+    "style_cards", "style_idea_cards", "style_slot_audit", "candidate_assets", "candidates",
+    "inspection", "inspection_history", "model_output_summary", "model_outputs",
+    "human_decision", "direction_selection", "quality_disposition", "final_confirmation",
+    "frozen_delivery", "delivery_frozen",
+)
+BRANCH_INVALIDATED_FACTS = (
+    "task_spec_confirmation", "inspection", "inspection_history", "final_confirmation",
+    "frozen_delivery", "delivery_frozen", "quality_disposition",
+)
 
 
 class EventStore:
@@ -503,6 +516,125 @@ class ProjectStore:
             items.append(item)
         return {"project_id": self.project_id, "version": int(manifest.get("branch_version", 1)), "items": items}
 
+    def _history_entries(self) -> list[tuple[str, str]]:
+        root = self.root / "checkpoints"
+        recorded = [str(event["checkpoint"]) for event in self.events.read_all()
+                    if event.get("type") == "step_succeeded" and isinstance(event.get("checkpoint"), str)]
+        on_disk = ([path.relative_to(self.root).as_posix() for path in root.glob("*/*.json")]
+                   if root.exists() else [])
+        # Event sequence is the canonical domain chronology. Orphaned legacy files
+        # follow in lexical order so their ordering remains deterministic.
+        checkpoints = list(dict.fromkeys(recorded))
+        checkpoints.extend(sorted(set(on_disk) - set(checkpoints)))
+        return [(checkpoint, self._history_node_id(checkpoint)) for checkpoint in checkpoints]
+
+    def _history_node_id(self, checkpoint: str) -> str:
+        return "history_" + content_hash({"project_id": self.project_id, "checkpoint": checkpoint})[:32]
+
+    @staticmethod
+    def _history_cursor(position: int) -> str:
+        return base64.urlsafe_b64encode(f"history-v1:{position}".encode()).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_history_cursor(cursor: str | None) -> int:
+        if cursor is None:
+            return 0
+        try:
+            raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+            prefix, value = raw.split(":", 1)
+            if prefix != "history-v1" or int(value) < 0:
+                raise ValueError
+            return int(value)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("历史游标无效。") from exc
+
+    def _history_read(self, checkpoint: str) -> tuple[str, dict[str, Any] | None, str | None]:
+        path = self.root / checkpoint
+        if not path.is_file():
+            return "missing", None, "固化历史文件缺失。"
+        try:
+            return "available", self.checkpoints.load(checkpoint), None
+        except (CorruptProjectError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            return "migration_failed", None, str(exc)
+
+    def history_index(self, *, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+        """Return lightweight immutable checkpoint summaries; never runs recovery/migration."""
+        if limit < 1 or limit > 100:
+            raise ValueError("历史分页大小必须在 1 到 100 之间。")
+        entries = self._history_entries()
+        offset = self._decode_history_cursor(cursor)
+        if offset > len(entries):
+            raise ValueError("历史游标超出范围。")
+        items = []
+        for checkpoint, node_id in entries[offset:offset + limit]:
+            availability, envelope, error = self._history_read(checkpoint)
+            item: dict[str, Any] = {"node_id": node_id, "checkpoint": checkpoint,
+                                    "availability": availability, "error": error}
+            if envelope:
+                data = envelope.get("data") or {}
+                item.update(branch=envelope.get("branch"), sequence=envelope.get("sequence"),
+                            state=envelope.get("state"), checksum=envelope.get("checksum"),
+                            summary={"task_spec_version": (data.get("task_specification") or {}).get("version"),
+                                     "fact_kinds": [key for key in HISTORY_FACT_FIELDS if key in data],
+                                     "asset_count": len(self._artifact_refs(data))})
+            items.append(item)
+        end = offset + len(items)
+        return {"schema_version": 1, "project_id": self.project_id, "items": items,
+                "next_cursor": self._history_cursor(end) if end < len(entries) else None}
+
+    @staticmethod
+    def _artifact_refs(value: Any) -> list[str]:
+        found: set[str] = set()
+        def visit(item: Any) -> None:
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    if key in {"artifact_id", "asset_id"} and isinstance(child, str) and child.startswith("artifact_"):
+                        found.add(child)
+                    visit(child)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child)
+        visit(value)
+        return sorted(found)
+
+    def history_detail(self, node_id: str) -> dict[str, Any]:
+        entry = next(((checkpoint, candidate) for checkpoint, candidate in self._history_entries()
+                      if candidate == node_id), None)
+        if entry is None:
+            raise FileNotFoundError("历史节点不存在或不属于本工程。")
+        checkpoint, _ = entry
+        availability, envelope, error = self._history_read(checkpoint)
+        result: dict[str, Any] = {"schema_version": 1, "project_id": self.project_id,
+                                  "node_id": node_id, "checkpoint": checkpoint,
+                                  "availability": availability, "error": error, "facts": None,
+                                  "assets": []}
+        if envelope:
+            data = envelope.get("data") or {}
+            facts = {key: json.loads(json.dumps(data[key])) for key in HISTORY_FACT_FIELDS if key in data}
+            result.update(branch=envelope.get("branch"), sequence=envelope.get("sequence"),
+                          state=envelope.get("state"), checksum=envelope.get("checksum"), facts=facts,
+                          assets=[{"artifact_id": ref, "uri": f"artifact://{ref}",
+                                   "download_path": f"/api/projects/{self.project_id}/assets/{ref}"}
+                                  for ref in self._artifact_refs(facts)])
+        return result
+
+    def history_reopen_preview(self, node_id: str, *, name: str | None = None) -> dict[str, Any]:
+        detail = self.history_detail(node_id)
+        if detail["availability"] != "available":
+            raise LegacyCheckpointReadOnlyError("该历史节点不可用于重开。")
+        registry = json.loads((self.root / "branches.json").read_text(encoding="utf-8"))
+        source_name = detail["branch"]
+        source = registry.get("branches", {}).get(source_name)
+        if source is None:
+            raise CorruptProjectError("源历史分支登记不存在。")
+        parent_id = source.get("branch_id") or f"branch_{content_hash({'project': self.project_id, 'name': source_name})[:32]}"
+        return {"schema_version": 1, "node_id": node_id, "checkpoint": detail["checkpoint"],
+                "parent_branch_id": parent_id, "parent_branch": source_name,
+                "new_branch": {"name": name or "自动生成名称", "parent_branch_id": parent_id,
+                               "fork_checkpoint": detail["checkpoint"]},
+                "invalidated_confirmations": list(BRANCH_INVALIDATED_FACTS),
+                "execution_contract": "POST /api/projects/{project_id}/branches"}
+
     def inspect_checkpoint(self, checkpoint: str) -> dict[str, Any]:
         """Validate and return a checkpoint without changing project state."""
         candidate = (self.root / checkpoint).resolve()
@@ -625,7 +757,7 @@ class ProjectStore:
             raise CorruptProjectError("源 checkpoint 的分支登记不存在。")
         branch_id = f"branch_{uuid4().hex}"
         data = json.loads(json.dumps(source["data"]))
-        for key in ("task_spec_confirmation", "inspection", "final_confirmation", "frozen_delivery", "delivery_frozen", "quality_disposition"):
+        for key in BRANCH_INVALIDATED_FACTS:
             data.pop(key, None)
         relative, checksum = self.checkpoints.save(branch, 1, source["state"], data)
         pointer = {"path": relative, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}

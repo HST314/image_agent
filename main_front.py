@@ -93,6 +93,9 @@ class BranchSwitchRequest(StrictRequest):
     checkpoint: str = Field(min_length=1, max_length=256)
     expected_version: int = Field(ge=1)
 
+class HistoryReopenPreviewRequest(StrictRequest):
+    name: str | None = Field(default=None, min_length=2, max_length=64)
+
 
 @app.middleware("http")
 async def enforce_request_size(request: Request, call_next):
@@ -489,6 +492,32 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
 async def list_project_branches(project_id: str) -> dict[str, Any]:
     try:
         return await asyncio.to_thread(_store(project_id).list_branches)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/history")
+async def list_project_history(project_id: str, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(_store(project_id).history_index, limit=limit, cursor=cursor)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/history/{node_id}")
+async def get_project_history(project_id: str, node_id: str) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"history_[a-f0-9]{32}", node_id):
+            raise FileNotFoundError("历史节点不存在。")
+        return await asyncio.to_thread(_store(project_id).history_detail, node_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.post("/api/projects/{project_id}/history/{node_id}/reopen-preview")
+async def preview_history_reopen(project_id: str, node_id: str,
+                                 body: HistoryReopenPreviewRequest) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"history_[a-f0-9]{32}", node_id):
+            raise FileNotFoundError("历史节点不存在。")
+        return await asyncio.to_thread(_store(project_id).history_reopen_preview, node_id, name=body.name)
     except Exception as exc:
         raise _translate_error(exc) from exc
 
