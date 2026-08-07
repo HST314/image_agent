@@ -24,6 +24,7 @@ from storage.project_store import ProjectStore, content_hash
 from configs.runtime_policy import RuntimePolicy
 from agent_core.jobs import JobStore, WorkflowJobWorker
 from agent_core.guided_edit import GuidedEditRequest
+from agent_core.delivery import DeliveryService
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 
@@ -72,6 +73,13 @@ class AdvanceRequest(StrictRequest):
     quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
     expense_confirmed: bool = False
     offline: bool = False
+
+
+class ManualReturnRequest(StrictRequest):
+    delivery_version: int = Field(gt=0)
+    actor: str = Field(min_length=1, max_length=256)
+    target: str = Field(min_length=1, max_length=512)
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class BranchRequest(StrictRequest):
@@ -329,14 +337,31 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
 @app.get("/api/projects/{project_id}/delivery", response_model=DesignDeliveryEnvelope)
 async def get_delivery(project_id: str) -> DesignDeliveryEnvelope:
-    """Return only the frozen final image and short note; internal trace stays local."""
+    """Read the latest standalone Delivery without consulting a checkpoint."""
     try:
-        snapshot = _store(project_id).resume() or {}
-        if not snapshot.get("delivery_frozen") or not snapshot.get("final_asset"):
-            raise ValueError("交付尚未最终确认并冻结。")
-        asset = snapshot["final_asset"]
-        return DesignDeliveryEnvelope(final_image={"artifact_id": asset["artifact_id"], "uri": asset["uri"], "sha256": asset["sha256"]},
-                                      design_note=str(snapshot.get("design_note") or "已按确认任务书完成设计并通过最终确认。"))
+        return DesignDeliveryEnvelope.model_validate(DeliveryService(_store(project_id)).get())
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/delivery/generate", response_model=DesignDeliveryEnvelope)
+async def generate_delivery(project_id: str) -> DesignDeliveryEnvelope:
+    """Explicit retry boundary for note and immutable Delivery generation."""
+    try:
+        store = _store(project_id)
+        result = await asyncio.to_thread(DeliveryService(store).generate, store.resume() or {})
+        return DesignDeliveryEnvelope.model_validate(result)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/delivery/return")
+async def return_delivery(project_id: str, body: ManualReturnRequest) -> dict[str, Any]:
+    """Record a human return; no notification, polling, or webhook is performed."""
+    try:
+        service = DeliveryService(_store(project_id))
+        return await asyncio.to_thread(service.record_return, body.delivery_version,
+            actor=body.actor, target=body.target, idempotency_key=body.idempotency_key)
     except Exception as exc:
         raise _translate_error(exc) from exc
 

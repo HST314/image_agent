@@ -167,3 +167,8 @@ python3 -m pytest -q
 ```
 
 测试使用 Fake Clients / 离线客户端验证模型调用链，不消耗真实图片生成额度。
+# P1-09 最小 Delivery（服务端）
+
+最终确认冻结后，调用 `POST /api/projects/{project_id}/delivery/generate` 独立生成简短说明和不可变、版本化的 `DesignDeliveryEnvelope 1.1`。说明严格由已确认任务书、最终采用风格/选择理由及最终资产质检事实组成；失败仅记录可重试失败事件，不修改冻结资产或确认事实。
+
+`GET /api/projects/{project_id}/delivery` 只读取独立 Delivery 记录，不依赖 checkpoint，返回稳定资产 URI、真实 SHA-256、格式、尺寸、确认及 trace 引用。`POST /api/projects/{project_id}/delivery/return` 接受 `delivery_version`、`actor`、`target`、`idempotency_key`，只记录显式人工回传事实，不发送通知、轮询或 Webhook。同版本重复回传幂等；资产或说明变化生成新版本，并重新校验任务书、质检和最终确认哈希门禁。
