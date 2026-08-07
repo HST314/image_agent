@@ -36,6 +36,24 @@
     .toast-region{position:fixed;right:18px;bottom:18px;z-index:50;display:grid;gap:10px;width:min(390px,calc(100vw - 36px))}.toast{padding:14px 16px;border:1px solid var(--border);border-left:4px solid var(--primary);border-radius:12px;background:var(--surface-raised);box-shadow:var(--shadow);animation:toast-in .2s ease-out}.toast--error{border-left-color:var(--danger)}@keyframes toast-in{from{opacity:0;transform:translateY(8px)}}.dialog{border:0;padding:0;width:min(660px,calc(100vw - 32px));max-height:88dvh;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 70px rgba(0,0,0,.3)}.dialog::backdrop{background:rgba(12,8,18,.58);backdrop-filter:blur(3px)}.dialog__head,.dialog__body,.dialog__foot{padding:20px 24px}.dialog__head{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)}.dialog__head h2{margin:0;font-size:21px}.dialog__body{overflow:auto;max-height:62dvh}.dialog__foot{border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
     .ge-stage{position:relative;width:100%;height:min(56vh,520px);border:1px solid var(--border);border-radius:12px;background:var(--subtle);overflow:hidden;margin-bottom:14px}.ge-stage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block}.ge-stage canvas{position:absolute;touch-action:none;cursor:crosshair}.ge-stage__status{position:absolute;left:12px;bottom:12px;margin:0;padding:6px 10px;border-radius:8px;background:color-mix(in srgb,var(--surface) 88%,transparent);font-size:13px;color:var(--muted)}.ge-stage__status:empty{display:none}
     .ge-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}.ge-toolbar .btn{min-height:40px;padding:7px 13px}.ge-toolbar [aria-pressed=true]{border-color:var(--primary);background:var(--primary-soft)}.ge-field{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:700}.ge-field input[type=color]{width:44px;height:40px;padding:2px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}.ge-field input[type=range]{width:120px;accent-color:var(--primary)}.ge-status{min-height:20px;margin:10px 0 0;font-size:14px;color:var(--muted)}
+    .hist-grid{display:grid;grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);gap:18px;align-items:start}
+    .hist-list{display:grid;gap:10px;align-content:start}
+    .hist-node{width:100%;display:grid;gap:6px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:var(--surface);text-align:left;transition:border-color var(--ease),box-shadow var(--ease),background var(--ease)}
+    .hist-node:hover{background:var(--subtle)}
+    .hist-node[aria-current=true]{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+    .hist-node__meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+    .hist-chips{display:flex;gap:6px;flex-wrap:wrap}
+    .hist-chip{padding:2px 8px;border-radius:999px;background:var(--subtle);font-size:11px;font-weight:700;color:var(--muted)}
+    .hist-detail{min-width:0}
+    .hist-fact{padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--surface);margin-bottom:12px}
+    .hist-fact h4{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;font-size:14px}
+    .hist-assets{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px}
+    .hist-asset{display:block;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--subtle);text-decoration:none}
+    .hist-asset img{display:block;width:100%;aspect-ratio:1;object-fit:contain;background:var(--surface)}
+    .hist-asset span{display:block;padding:6px 8px;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .hist-asset.is-broken{display:grid;place-items:center;min-height:92px}
+    .hist-asset.is-broken:after{content:attr(data-note);padding:10px;font-size:12px;color:var(--danger);text-align:center}
+    @media(max-width:1023px){.hist-grid{grid-template-columns:1fr}}
     @media(max-width:767px){.ge-stage{height:min(48vh,420px)}}
     @media(max-width:1023px){.app{grid-template-columns:1fr}.sidebar{position:fixed;left:0;top:0;width:min(320px,88vw);transform:translateX(-105%);transition:transform var(--ease);box-shadow:var(--shadow)}.sidebar.is-open{transform:none}.mobile-menu{display:grid}.hero,.workspace{grid-template-columns:1fr}.hero__aside{grid-template-columns:1fr 1fr}.workspace__rail{grid-template-columns:repeat(2,minmax(0,1fr))}.workspace__rail .panel:last-child{grid-column:1/-1}}
     @media(max-width:767px){.topbar{min-height:66px}.topbar__actions .btn span{display:none}.content{padding:16px}.hero__aside,.workspace__rail{grid-template-columns:1fr}.workspace__rail .panel:last-child{grid-column:auto}.stepper{display:flex;overflow-x:auto;padding-bottom:8px}.step{min-width:110px}.candidate-grid{grid-template-columns:1fr}.section__head{display:block}.section__head .badge{margin-top:8px}.dialog__head,.dialog__body,.dialog__foot{padding:16px}.dialog__foot{flex-direction:column-reverse}.dialog__foot .btn{width:100%}}
@@ -57,6 +75,7 @@
   </div>
   <div class="toast-region" id="toasts" aria-live="polite" aria-atomic="true"></div>
   <dialog class="dialog" id="project-dialog" aria-labelledby="dialog-title"><form id="project-form"><div class="dialog__head"><h2 id="dialog-title">新建创作工程</h2><button type="button" class="icon-btn" data-close aria-label="关闭对话框"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="dialog__body"><div class="field"><label for="project-id">工程 ID <span aria-hidden="true">*</span></label><input class="input" id="project-id" name="project_id" required minlength="2" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]{1,63}" placeholder="campaign-visual-01" aria-describedby="project-help project-error"><small id="project-help">使用字母、数字、下划线或连字符，创建后不可更改。</small><div class="field-error" id="project-error" role="alert"></div></div><div class="field"><label for="task-json">ImageTaskCard JSON <span aria-hidden="true">*</span></label><textarea class="input" id="task-json" name="task_json" required spellcheck="false" aria-describedby="task-help task-error"></textarea><small id="task-help">必须符合生产后端 ImageTaskCard 契约，最多 512 KiB。</small><div class="field-error" id="task-error" role="alert"></div></div><label class="switch-row"><input type="checkbox" id="offline"><span><strong>显式离线测试模式</strong><span>使用模拟图片验证流程；模拟结果不能最终交付。</span></span></label></div><div class="dialog__foot"><button type="button" class="btn btn--secondary" data-close>取消</button><button type="submit" class="btn btn--primary" id="create-button">创建并启动</button></div></form></dialog>
+  <dialog class="dialog" id="reopen-dialog" aria-labelledby="reopen-title"><div class="dialog__head"><h2 id="reopen-title">从历史节点重开新分支</h2><button type="button" class="icon-btn" id="reopen-close" aria-label="关闭对话框"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="dialog__body"><div id="reopen-preview-body"></div><div class="field"><label for="reopen-name">新分支名称</label><input class="input" id="reopen-name" maxlength="64" placeholder="留空则由服务端自动生成" aria-describedby="reopen-name-error"><div class="field-error" id="reopen-name-error" role="alert"></div></div><div class="field"><label for="reopen-actor">操作者标识 <span aria-hidden="true">*</span></label><input class="input" id="reopen-actor" maxlength="256" placeholder="你的名字或工号" aria-describedby="reopen-actor-error"><div class="field-error" id="reopen-actor-error" role="alert"></div></div><p class="ge-status" id="reopen-status" role="status"></p></div><div class="dialog__foot"><button type="button" class="btn btn--secondary" id="reopen-cancel">取消</button><button type="button" class="btn btn--primary" id="reopen-confirm">确认创建新分支</button></div></dialog>
   <script>
     'use strict';
     const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
@@ -65,6 +84,10 @@
     const order=Object.keys(labels); const state={projects:[],current:null,loading:false,offline:localStorage.getItem('studio-offline')==='true'};
     const GE_MAX_ANNOTATIONS=500,GE_MAX_BRUSH_POINTS=4000;let GE_POLL_MS=800,geResizeBound=false;const guidedEdit={assetId:'',tool:'rectangle',color:'#ff2d55',width:6,annotations:[],active:null,submitting:false,ready:false,naturalW:0,naturalH:0,contentW:0,contentH:0,draftKey:''};
     const deliveryUi={key:'',status:'idle',data:null,error:'',generating:false,returning:false,draft:{actor:'',target:''}};
+    const HIST_PAGE=25;
+    const HIST_FACT_LABELS={raw_design_task_envelope:'原始任务',task_specification:'任务书',task_spec_confirmation:'任务书确认',style_cards:'风格卡',style_idea_cards:'风格创意卡',style_slot_audit:'VLM 审计',candidate_assets:'候选资产',candidates:'候选',inspection:'质检',inspection_history:'质检历史',model_output_summary:'模型摘要',model_outputs:'模型输出',human_decision:'人工决策',direction_selection:'方向选择',quality_disposition:'质量处置',final_confirmation:'最终确认',frozen_delivery:'冻结交付',delivery_frozen:'交付冻结'};
+    const HIST_INVALIDATED_LABELS={task_spec_confirmation:'任务书确认',inspection:'质检结论',inspection_history:'质检历史',final_confirmation:'最终确认',frozen_delivery:'冻结交付',delivery_frozen:'交付冻结',quality_disposition:'质量处置'};
+    const historyUi={key:'',listStatus:'idle',items:[],nextCursor:null,listError:'',loadingMore:false,selected:'',detailStatus:'idle',detail:null,detailError:'',reopenNode:'',previewStatus:'idle',preview:null,previewError:'',expectedVersion:null,confirming:false,confirmError:'',confirmHint:''};
     let JOB_POLL_MS=800;const jobUi={key:'',jobId:'',statusUrl:'',payload:null,job:null,busy:false,cancelling:false,noteEl:null,noteText:null,cancelEl:null};
     const ERR_CODE_LABELS={UPSTREAM_TIMEOUT:'上游超时',RATE_LIMITED:'请求被限流',AUTHENTICATION_FAILED:'鉴权失败',CONTENT_REJECTED:'内容审核未通过',PROVIDER_UNAVAILABLE:'供应商暂不可用',ASSET_INGESTION_FAILED:'资产摄取失败',STRUCTURED_OUTPUT_INVALID:'模型输出结构无效',INVALID_INPUT:'输入不合法',CONFIGURATION_OR_SKILL:'配置或 Skill 异常',CANCELLED:'已取消',INTERNAL_ERROR:'内部错误'};
     const ERR_ACTION_COPY={retry:'可安全重试：重试复用原动作与幂等语义，从最后成功边界继续。',modify_input:'需要修改输入：请调整任务书、提示词或素材后重新提交。',contact_admin:'需要管理员处理：请联系管理员检查凭证、配置或 Skill。',human_decision:'需要人工决策：请审阅后选择处理方式。',none:'该状态无需重试。'};
@@ -162,8 +185,8 @@
       }catch{/* 网络不可用时保留 watch，下次刷新继续续接 */}
     }
     function renderHome(){state.current=null;$('#page-title').textContent='开始一项新的视觉创作';$('#context-label').textContent='创作工作台';$('#content').innerHTML=`<section class="hero"><div class="panel hero__main"><span class="badge">生产工作流</span><h2>从清晰需求到<br>可审计视觉交付</h2><p>在一个可恢复的工作台中完成需求澄清、任务确认、五图选择、逐轮质检和最终审批。每一步都保存为后端检查点。</p><button class="btn btn--primary" data-new>${icons.image}新建视觉工程</button></div><aside class="panel hero__aside"><div><div class="stat-label">现有工程</div><div class="stat-value">${state.projects.length}</div></div><div class="hint">工作流会在需要你决策时暂停。断线或关闭页面不会丢失已经完成的节点。</div></aside></section><section class="panel section"><div class="section__head"><div><h2>最近工程</h2><p>选择工程可继续上一次的检查点</p></div></div>${state.projects.length?`<div class="candidate-grid">${state.projects.slice(0,4).map(p=>`<button class="candidate" data-project="${escapeAttr(p.project_id)}"><span class="candidate__image">${icons.image}</span><span class="candidate__label">${escapeHtml(p.project_id)} · ${escapeHtml(labels[p.state]||'待处理')}</span></button>`).join('')}</div>`:`<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>尚无创作工程</h3><p>准备一份 ImageTaskCard，系统会从真实后端工作流开始推进。</p><button class="btn btn--secondary" data-new>创建第一个工程</button></div></div>`}</section>`;renderNav()}
-    async function openProject(id){setBusy(true,'正在读取工程…');dlvReset();try{state.current=await api(`/api/projects/${encodeURIComponent(id)}`);renderProject();renderNav();closeSidebar();jobWatchResume(id)}catch(e){toast(e.message,'error')}finally{setBusy(false)}}
-    function renderProject(){const v=state.current,s=v.snapshot||{},m=v.manifest||{},idx=Math.max(0,order.indexOf(s.state));$('#page-title').textContent=v.project_id;$('#context-label').textContent=s.completed?'已完成工程':(labels[s.state]||'创作工程');const status=m.failed_step?'<span class="badge badge--danger">需要恢复</span>':s.completed?'<span class="badge badge--success">已完成</span>':s.waiting?'<span class="badge badge--warning">等待你的决定</span>':'<span class="badge">可继续</span>';$('#content').innerHTML=`${state.offline?`<div class="offline-banner" role="status">${icons.info}<span><strong>离线测试模式</strong>：生成结果为模拟资产，不可用于最终交付。</span></div><br>`:''}<section class="panel section"><div class="section__head"><div><h2>创作进度</h2><p>当前分支 ${escapeHtml(m.current_branch||'main')} · 检查点 ${m.current_checkpoint?.sequence||0}</p></div>${status}</div><div class="stepper" aria-label="工作流进度">${order.map((key,i)=>`<div class="step ${i<idx?'is-done':i===idx?'is-current':''}"><div class="step__bar"></div><span>${labels[key]}</span></div>`).join('')}</div></section><div class="workspace"><div class="workspace__primary"><section class="panel section stage">${renderStage(s,m)}</section>${s.task_markdown?`<section class="panel section"><div class="section__head"><div><h3>创作任务书</h3><p>由生产后端生成的可审计版本</p></div></div><div class="markdown">${escapeHtml(s.task_markdown)}</div></section>`:''}</div><aside class="workspace__rail"><section class="panel section"><div class="section__head"><div><h3>工程信息</h3></div></div><dl class="kv"><dt>当前状态</dt><dd>${escapeHtml(labels[s.state]||s.state||'未开始')}</dd><dt>当前分支</dt><dd>${escapeHtml(m.current_branch||'main')}</dd><dt>更新时间</dt><dd>${formatDate(m.updated_at)}</dd><dt>恢复能力</dt><dd>${v.capabilities.map(escapeHtml).join('、')||'无'}</dd></dl></section><section class="panel section"><div class="section__head"><div><h3>最近活动</h3><p>真实事件审计记录</p></div></div>${renderTimeline(v.history)}</section></aside></div>`;if(!m.failed_step&&s.phase==='waiting_human_rework')initGuidedEdit();if(!m.failed_step&&s.completed){bindDelivery();loadDelivery()}const jr=$('#job-retry');if(jr)jr.addEventListener('click',jobRetryOriginal)}
+    async function openProject(id){setBusy(true,'正在读取工程…');dlvReset();histReopenClose();histReset();try{state.current=await api(`/api/projects/${encodeURIComponent(id)}`);renderProject();renderNav();closeSidebar();jobWatchResume(id)}catch(e){toast(e.message,'error')}finally{setBusy(false)}}
+    function renderProject(){const v=state.current,s=v.snapshot||{},m=v.manifest||{},idx=Math.max(0,order.indexOf(s.state));$('#page-title').textContent=v.project_id;$('#context-label').textContent=s.completed?'已完成工程':(labels[s.state]||'创作工程');const status=m.failed_step?'<span class="badge badge--danger">需要恢复</span>':s.completed?'<span class="badge badge--success">已完成</span>':s.waiting?'<span class="badge badge--warning">等待你的决定</span>':'<span class="badge">可继续</span>';$('#content').innerHTML=`${state.offline?`<div class="offline-banner" role="status">${icons.info}<span><strong>离线测试模式</strong>：生成结果为模拟资产，不可用于最终交付。</span></div><br>`:''}<section class="panel section"><div class="section__head"><div><h2>创作进度</h2><p>当前分支 ${escapeHtml(m.current_branch||'main')} · 检查点 ${m.current_checkpoint?.sequence||0}</p></div>${status}</div><div class="stepper" aria-label="工作流进度">${order.map((key,i)=>`<div class="step ${i<idx?'is-done':i===idx?'is-current':''}"><div class="step__bar"></div><span>${labels[key]}</span></div>`).join('')}</div></section><div class="workspace"><div class="workspace__primary"><section class="panel section stage">${renderStage(s,m)}</section>${s.task_markdown?`<section class="panel section"><div class="section__head"><div><h3>创作任务书</h3><p>由生产后端生成的可审计版本</p></div></div><div class="markdown">${escapeHtml(s.task_markdown)}</div></section>`:''}</div><aside class="workspace__rail"><section class="panel section"><div class="section__head"><div><h3>工程信息</h3></div></div><dl class="kv"><dt>当前状态</dt><dd>${escapeHtml(labels[s.state]||s.state||'未开始')}</dd><dt>当前分支</dt><dd>${escapeHtml(m.current_branch||'main')}</dd><dt>更新时间</dt><dd>${formatDate(m.updated_at)}</dd><dt>恢复能力</dt><dd>${v.capabilities.map(escapeHtml).join('、')||'无'}</dd></dl></section><section class="panel section"><div class="section__head"><div><h3>最近活动</h3><p>真实事件审计记录</p></div></div>${renderTimeline(v.history)}</section></aside></div><section class="panel section" id="hist-root">${renderHistorySection()}</section>`;if(!m.failed_step&&s.phase==='waiting_human_rework')initGuidedEdit();if(!m.failed_step&&s.completed){bindDelivery();loadDelivery()}bindHistory();histMaybeLoad();const jr=$('#job-retry');if(jr)jr.addEventListener('click',jobRetryOriginal)}
     function renderStage(s,m){const wj=state.current&&jobUi.key===state.current.project_id&&jobUi.job&&String(jobUi.job.status)==='failed'?jobUi.job:null;if(m.failed_step||wj)return renderFailureStage(s,m);if(s.completed)return `<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>视觉资产已完成最终审批</h3><p>最终资产已由生产工作流校验并冻结；继续修改需从历史节点创建新分支。</p>${assetView(s.final_asset)}${s.final_confirmation?`<dl class="kv" style="max-width:360px;margin:12px auto 0"><dt>最终确认人</dt><dd>${escapeHtml(s.final_confirmation.actor||'—')}</dd><dt>确认时间</dt><dd>${formatDate(s.final_confirmation.confirmed_at)}</dd></dl>`:''}</div></div><div id="dlv-root" style="margin-top:22px;border-top:1px solid var(--border);padding-top:20px;text-align:left">${renderDeliverySection()}</div>`;if(s.phase==='waiting_clarification')return renderQuestions(s.question_card);if(s.phase==='waiting_task_spec_confirmation')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>请确认当前任务书</h3><p>确认将绑定当前版本与正文哈希；任务书编辑后必须重新确认。</p><button class="btn btn--primary" data-confirm="task">确认任务书并继续</button></div></div>`;if(s.phase==='waiting_candidate_retry')return renderCandidateRetry(s);if(s.phase==='waiting_master_selection')return renderCandidates(s.candidates);if(s.phase==='waiting_human_approval')return renderCalibration(s);if(s.phase==='waiting_quality_disposition')return renderQualityDisposition(s);if(s.phase==='waiting_final_confirmation')return `<div class="empty"><div><h3>最终人工确认</h3><p>确认绑定当前资产哈希并冻结交付；也可返回人工修改。</p>${assetView(s.asset||s.current_asset)}<div class="button-row"><button class="btn btn--primary" data-confirm="final">确认并冻结交付</button><button class="btn btn--secondary" data-confirm="continue">继续修改</button></div></div></div>`;if(s.phase==='waiting_human_rework')return renderGuidedEdit(s,m);if(s.phase==='waiting_reinspection')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>修改已保存，等待重新质检</h3><p>继续后将使用真实视觉模型检查最新资产，不会复用旧质检结论。</p><button class="btn btn--primary" data-action="resume">开始重新质检</button></div></div>`;return `<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>${escapeHtml(labels[s.state]||'工程已保存')}</h3><p>从当前检查点继续推进。若外部模型或密钥不可用，系统会保存真实错误供恢复。</p><button class="btn btn--primary" data-action="resume">继续工作流</button></div></div>`}
     function renderQuestions(card={questions:[]}){return `<div class="section__head"><div><h2>补充关键信息</h2><p>这些答案会写回生产任务卡后再继续</p></div><span class="badge badge--warning">${card.questions.length} 项待回答</span></div><form id="answer-form">${card.questions.map((q,i)=>`<fieldset class="field"><legend>${i+1}. ${escapeHtml(q.question)}</legend><small>${escapeHtml(q.impact||'')}</small><select class="input" name="${escapeAttr(q.field)}"><option value="">请选择或在下方输入</option>${(q.options||[]).map(o=>`<option value="${escapeAttr(o.label)}">${escapeHtml(o.label)} — ${escapeHtml(o.description)}</option>`).join('')}</select><input class="input" name="${escapeAttr(q.field)}__custom" placeholder="也可输入自己的答案"></fieldset>`).join('')}<button class="btn btn--primary" type="submit">提交答案并继续</button></form>`}
     function renderCandidates(items=[]){return `<div class="section__head"><div><h2>选择一张当前主图</h2><p>选中后进入画面质检与返工阶段</p></div><span class="badge">${items.length} 个方向</span></div><div class="candidate-grid">${items.map((a,i)=>`<button class="candidate" data-candidate="${escapeAttr(a.id)}" aria-pressed="false"><span class="candidate__image">${assetImage(a)}</span><span class="candidate__label">候选方向 ${i+1}</span></button>`).join('')}</div><div class="button-row" style="margin-top:16px"><button class="btn btn--primary" id="select-button" disabled>确认当前主图</button></div>`}
@@ -224,6 +247,219 @@
     async function dlvGenerate(){if(deliveryUi.generating)return;const pid=state.current&&state.current.project_id;if(!pid)return;const prev=deliveryUi.data&&deliveryUi.data.delivery_version;deliveryUi.generating=true;deliveryUi.error='';renderProject();try{const data=await api(`/api/projects/${encodeURIComponent(pid)}/delivery/generate`,{method:'POST',body:'{}'});deliveryUi.data=data;deliveryUi.status='ready';if(prev&&prev!==data.delivery_version)deliveryUi.draft={actor:'',target:''}}catch(e){deliveryUi.error=`说明生成未完成：${e.message}`;if(deliveryUi.status!=='ready')deliveryUi.status='empty'}finally{deliveryUi.generating=false;const now=state.current;if(now&&now.project_id===pid&&(now.snapshot||{}).completed)renderProject()}}
     async function dlvReturn(){if(deliveryUi.returning)return;const d=deliveryUi.data;if(!d||d.return_status!=='pending_return')return;const pid=state.current&&state.current.project_id;if(!pid)return;const actorEl=$('#dlv-actor'),targetEl=$('#dlv-target');const actor=(actorEl?actorEl.value:'').trim(),target=(targetEl?targetEl.value:'').trim();deliveryUi.draft={actor,target};const ae=$('#dlv-actor-error'),te=$('#dlv-target-error');if(ae)ae.textContent=actor?'':'请填写回传操作者。';if(te)te.textContent=target?'':'请填写回传目标。';if(!actor||!target)return;const body={delivery_version:d.delivery_version,actor,target,idempotency_key:`delivery-return:${geHash(JSON.stringify([pid,d.delivery_version,actor,target]))}`};deliveryUi.returning=true;const btn=$('#dlv-return-submit');if(btn)btn.disabled=true;dlvSetStatus('正在提交回传…');try{await api(`/api/projects/${encodeURIComponent(pid)}/delivery/return`,{method:'POST',body:JSON.stringify(body)});try{localStorage.setItem('studio-actor',actor)}catch{}const fresh=await api(`/api/projects/${encodeURIComponent(pid)}/delivery`);deliveryUi.data=fresh;deliveryUi.status='ready';deliveryUi.draft={actor:'',target:''};dlvSetStatus('');toast('已记录人工回传事实。');renderProject()}catch(e){dlvSetStatus(`回传未完成：${e.message}`,true);toast(e.message,'error')}finally{deliveryUi.returning=false;const b2=$('#dlv-return-submit');if(b2)b2.disabled=false}}
     function bindDelivery(){const on=(id,ev,fn)=>{const el=$(id);if(el)el.addEventListener(ev,fn)};on('#dlv-generate','click',dlvGenerate);on('#dlv-regenerate','click',dlvGenerate);on('#dlv-reload','click',()=>{dlvReset();renderProject()});on('#dlv-return-submit','click',dlvReturn);on('#dlv-actor','input',e=>{deliveryUi.draft.actor=String(e.target.value)});on('#dlv-target','input',e=>{deliveryUi.draft.target=String(e.target.value)});const ac=$('#dlv-actor');if(ac&&!ac.value){try{ac.value=localStorage.getItem('studio-actor')||''}catch{}}}
+    function histReset(){historyUi.key='';historyUi.listStatus='idle';historyUi.items=[];historyUi.nextCursor=null;historyUi.listError='';historyUi.loadingMore=false;historyUi.selected='';historyUi.detailStatus='idle';historyUi.detail=null;historyUi.detailError='';histReopenReset()}
+    function histReopenReset(){historyUi.reopenNode='';historyUi.previewStatus='idle';historyUi.preview=null;historyUi.previewError='';historyUi.expectedVersion=null;historyUi.confirming=false;historyUi.confirmError='';historyUi.confirmHint=''}
+    function histMaybeLoad(){const pid=state.current&&state.current.project_id;if(!pid||historyUi.key===pid)return;historyUi.key=pid;histLoadPage(null)}
+    async function histLoadPage(cursor){
+      const pid=historyUi.key;if(!pid)return;
+      const first=cursor===null;
+      if(first){historyUi.listStatus='loading';historyUi.items=[];historyUi.nextCursor=null;historyUi.listError=''}
+      else{if(historyUi.loadingMore||!historyUi.nextCursor)return;historyUi.loadingMore=true}
+      try{
+        const qs=first?`?limit=${HIST_PAGE}`:`?limit=${HIST_PAGE}&cursor=${encodeURIComponent(cursor)}`;
+        const data=await api(`/api/projects/${encodeURIComponent(pid)}/history${qs}`);
+        if(historyUi.key!==pid)return;
+        const items=Array.isArray(data.items)?data.items:[];
+        historyUi.items=first?items:historyUi.items.concat(items);
+        historyUi.nextCursor=typeof data.next_cursor==='string'?data.next_cursor:null;
+        historyUi.listStatus='ready';historyUi.listError='';
+      }catch(e){
+        if(historyUi.key!==pid)return;
+        historyUi.listError=e.message;historyUi.listStatus='error';
+      }finally{
+        historyUi.loadingMore=false;
+        if(historyUi.key===pid&&state.current&&state.current.project_id===pid)histRenderSection();
+      }
+    }
+    async function histSelect(nodeId){
+      if(!historyUi.key)return;
+      if(historyUi.selected===nodeId&&historyUi.detailStatus==='ready')return;
+      historyUi.selected=nodeId;historyUi.detailStatus='loading';historyUi.detail=null;historyUi.detailError='';
+      histRenderSection();
+      const pid=historyUi.key;
+      try{
+        const data=await api(`/api/projects/${encodeURIComponent(pid)}/history/${encodeURIComponent(nodeId)}`);
+        if(historyUi.key!==pid||historyUi.selected!==nodeId)return;
+        historyUi.detail=data;historyUi.detailStatus='ready';
+      }catch(e){
+        if(historyUi.key!==pid||historyUi.selected!==nodeId)return;
+        historyUi.detailError=e.message;historyUi.detailStatus='error';
+      }
+      if(historyUi.key===pid&&state.current&&state.current.project_id===pid)histRenderSection();
+    }
+    function histRenderSection(){const host=$('#hist-root');if(!host)return;host.innerHTML=renderHistorySection();bindHistory()}
+    function renderHistorySection(){
+      const m=(state.current&&state.current.manifest)||{};
+      const head=`<div class="section__head"><div><h3>历史时间线</h3><p>按服务端稳定顺序只读呈现固化历史节点；查看过去不会改变当前分支与状态</p></div><div class="button-row"><span class="badge">当前分支 ${escapeHtml(m.current_branch||'main')}</span><button type="button" class="btn btn--secondary" id="hist-reload"${historyUi.listStatus==='loading'?' disabled':''}>重载时间线</button></div></div>`;
+      return head+`<div class="hist-grid"><div class="hist-list" id="hist-list">${renderHistoryList()}</div><div class="hist-detail" id="hist-detail">${renderHistoryDetail()}</div></div>`;
+    }
+    function renderHistoryList(){
+      if(historyUi.listStatus==='idle'||historyUi.listStatus==='loading')return `<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><p style="color:var(--muted);font-size:13px">正在加载历史概要…</p>`;
+      if(historyUi.listStatus==='error')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>历史概要加载失败</h3><p>${escapeHtml(historyUi.listError)}</p><button type="button" class="btn btn--secondary" id="hist-retry">重试加载</button></div></div>`;
+      if(!historyUi.items.length)return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>暂无历史节点</h3><p>工作流推进后，每个成功节点都会固化为可审计历史。</p></div></div>`;
+      const rows=historyUi.items.map(it=>{
+        const avail=it.availability==='available'?'<span class="badge badge--success">可用</span>':it.availability==='missing'?'<span class="badge badge--danger">已缺失</span>':'<span class="badge badge--warning">迁移失败</span>';
+        const sum=it.summary||{};
+        const kinds=Array.isArray(sum.fact_kinds)?sum.fact_kinds:[];
+        const chips=kinds.map(k=>`<span class="hist-chip">${escapeHtml(HIST_FACT_LABELS[k]||k)}</span>`).join('');
+        const spec=sum.task_spec_version!=null?`任务书 v${escapeHtml(String(sum.task_spec_version))}`:'无任务书版本';
+        const assets=Number.isInteger(sum.asset_count)?`${sum.asset_count} 项资产`:'';
+        const stateLabel=it.state?(labels[it.state]||it.state):'';
+        const title=it.availability==='available'?(stateLabel||'未知状态'):((it.checkpoint||'').split('/').pop()||'历史节点');
+        const meta=it.availability==='available'
+          ?`分支 ${escapeHtml(it.branch||'—')} · 序号 ${escapeHtml(String(it.sequence==null?'—':it.sequence))}`
+          :escapeHtml(it.error||'固化记录不可读');
+        return `<button type="button" class="hist-node" id="hist-node-${escapeAttr(it.node_id)}" aria-current="${historyUi.selected===it.node_id}"><strong>${escapeHtml(title)}</strong><span class="hist-node__meta">${avail}<span>${meta}</span></span>${it.availability==='available'?`<span class="hist-node__meta"><span>${spec}</span><span>${assets}</span></span>${chips?`<span class="hist-chips">${chips}</span>`:''}`:''}</button>`;
+      }).join('');
+      const tail=historyUi.nextCursor
+        ?`<button type="button" class="btn btn--secondary" id="hist-more"${historyUi.loadingMore?' disabled':''}>${historyUi.loadingMore?'正在加载…':'加载更早节点'}</button>`
+        :`<p style="color:var(--muted);font-size:13px;text-align:center;margin:6px 0 0">已到最早的历史节点</p>`;
+      return rows+tail;
+    }
+    function renderHistoryDetail(){
+      if(historyUi.detailStatus==='idle')return `<div class="empty"><div><div class="empty__icon">${icons.image}</div><h3>选择一个历史节点</h3><p>选中左侧节点后才按需加载该节点的固化详情；浏览、选择均不会改写任何当前状态。</p></div></div>`;
+      if(historyUi.detailStatus==='loading')return `<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><p style="color:var(--muted);font-size:13px">正在加载节点详情…</p>`;
+      if(historyUi.detailStatus==='error')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>节点详情加载失败</h3><p>${escapeHtml(historyUi.detailError)}</p><button type="button" class="btn btn--secondary" id="hist-detail-retry">重试加载</button></div></div>`;
+      const d=historyUi.detail||{};
+      if(d.availability==='missing')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>该历史节点已缺失</h3><p>${escapeHtml(d.error||'固化历史文件缺失。')}</p><p>不会用当前数据补画历史，该节点不可用于重开。</p></div></div>`;
+      if(d.availability==='migration_failed')return `<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>该历史节点迁移失败</h3><p>${escapeHtml(d.error||'固化记录无法解析或不受支持。')}</p><p>不会用当前数据补画历史，该节点不可用于重开。</p></div></div>`;
+      const meta=`<dl class="kv"><dt>节点状态</dt><dd>${escapeHtml(labels[d.state]||d.state||'—')}</dd><dt>所属分支</dt><dd>${escapeHtml(d.branch||'—')}</dd><dt>序号</dt><dd>${escapeHtml(String(d.sequence==null?'—':d.sequence))}</dd><dt>checksum</dt><dd>${escapeHtml(String(d.checksum||'—').slice(0,16))}${d.checksum?'…':''}</dd><dt>checkpoint</dt><dd>${escapeHtml(d.checkpoint||'—')}</dd></dl>`;
+      const facts=d.facts&&typeof d.facts==='object'?d.facts:{};
+      const keys=Object.keys(HIST_FACT_LABELS).filter(k=>k in facts);
+      const factsHtml=keys.length?keys.map(k=>histFactCard(k,facts[k])).join(''):`<p class="hint">该节点没有固化任务书、风格卡、候选、质检、模型摘要、人工决策或交付确认事实。</p>`;
+      const assets=Array.isArray(d.assets)?d.assets:[];
+      const assetsHtml=assets.length?`<h4 style="margin:14px 0 8px">资产引用（只读 · 经项目作用域代理）</h4><div class="hist-assets">${assets.map(a=>histAssetCard(a)).join('')}</div>`:'';
+      const reopen=`<div class="button-row" style="margin-top:16px"><button type="button" class="btn btn--primary" id="hist-reopen">从此节点重开新分支</button></div><p style="color:var(--muted);font-size:13px">重开会先展示只读预览，明确父子关系与将失效的确认关系；确认后才创建新分支，旧分支与历史逐字节保留。</p>`;
+      return `${meta}<h4 style="margin:14px 0 8px">固化事实（该节点当时内容 · 只读）</h4>${factsHtml}${assetsHtml}${reopen}`;
+    }
+    function histFactCard(key,value){
+      return `<section class="hist-fact"><h4>${escapeHtml(HIST_FACT_LABELS[key]||key)}<span class="badge">只读</span></h4>${histFactBody(key,value)}</section>`;
+    }
+    function histFactBody(key,value){
+      if(value==null)return '<p style="color:var(--muted)">—</p>';
+      if(Array.isArray(value)){
+        if(value.length&&value.every(v=>v&&typeof v==='object'&&typeof v.artifact_id==='string'))
+          return `<div class="hist-assets">${value.map(v=>histAssetCard({artifact_id:v.artifact_id,note:[v.style_index||v.slot||v.id,v.title].filter(Boolean).join(' · ')})).join('')}</div>`;
+        return `<div class="markdown">${escapeHtml(JSON.stringify(value,null,2))}</div>`;
+      }
+      if(typeof value==='object'){
+        const scalars=Object.entries(value).filter(([,v])=>v==null||['string','number','boolean'].includes(typeof v));
+        const complex=Object.entries(value).filter(([,v])=>!(v==null||['string','number','boolean'].includes(typeof v)));
+        const kv=scalars.length?`<dl class="kv">${scalars.map(([k,v])=>`<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v==null?'—':v))}</dd>`).join('')}</dl>`:'';
+        const rest=complex.map(([k,v])=>`<p style="margin:8px 0 4px;color:var(--muted);font-size:13px">${escapeHtml(k)}</p>${histFactBody(k,v)}`).join('');
+        return kv+rest||'<p style="color:var(--muted)">—</p>';
+      }
+      const text=String(value);
+      if(text.length>120||text.includes('\n'))return `<div class="markdown">${escapeHtml(text)}</div>`;
+      return `<p>${escapeHtml(text)}</p>`;
+    }
+    function histAssetUrl(ref){const pid=state.current&&state.current.project_id;return pid&&/^artifact_[a-f0-9]{64}$/.test(String(ref||''))?`/api/projects/${encodeURIComponent(pid)}/assets/${encodeURIComponent(ref)}`:''}
+    function histAssetCard(a){
+      const id=String(a&&a.artifact_id||'');
+      const serverPath=typeof a.download_path==='string'&&a.download_path.startsWith('/api/projects/')?a.download_path:'';
+      const path=serverPath||histAssetUrl(id);
+      const note=String(a.note||'');
+      if(!path)return `<div class="hist-asset is-broken" data-note="资产引用无效或越权不可见"><span>${escapeHtml(id||'未知资产')}</span></div>`;
+      return `<a class="hist-asset" href="${escapeAttr(path)}" target="_blank" rel="noopener" title="在新页打开原始资产（只读）"><img loading="lazy" src="${escapeAttr(path)}" alt="历史资产 ${escapeAttr(id)}" onerror="this.style.display='none';this.parentElement.classList.add('is-broken');this.parentElement.setAttribute('data-note','资产加载失败或不可见')"><span>${escapeHtml(note||id.slice(0,18)+'…')}</span></a>`;
+    }
+    function bindHistory(){
+      const on=(id,fn)=>{const el=$('#'+id);if(el)el.addEventListener('click',fn)};
+      on('hist-reload',()=>{if(historyUi.key)histLoadPage(null)});
+      on('hist-retry',()=>{if(historyUi.key)histLoadPage(null)});
+      on('hist-more',()=>{if(historyUi.nextCursor)histLoadPage(historyUi.nextCursor)});
+      on('hist-detail-retry',()=>{if(historyUi.selected)histSelect(historyUi.selected)});
+      on('hist-reopen',()=>histReopenOpen());
+      for(const it of historyUi.items){const el=$('#hist-node-'+it.node_id);if(el)el.addEventListener('click',()=>histSelect(it.node_id))}
+    }
+    function histReopenOpen(){
+      const d=historyUi.detail;
+      if(!d||d.availability!=='available'||!d.node_id)return;
+      histReopenReset();
+      historyUi.reopenNode=d.node_id;
+      const nameEl=$('#reopen-name');if(nameEl)nameEl.value='';
+      const actorEl=$('#reopen-actor');if(actorEl){try{actorEl.value=localStorage.getItem('studio-actor')||''}catch{}}
+      const ne=$('#reopen-name-error');if(ne)ne.textContent='';
+      const ae=$('#reopen-actor-error');if(ae)ae.textContent='';
+      const dlg=$('#reopen-dialog');if(dlg&&dlg.showModal)dlg.showModal();
+      histReopenFetch();
+    }
+    async function histReopenFetch(){
+      const pid=historyUi.key,node=historyUi.reopenNode;
+      if(!pid||!node)return;
+      historyUi.previewStatus='loading';historyUi.previewError='';historyUi.confirmError='';historyUi.confirmHint='';
+      histReopenRender();
+      const nameEl=$('#reopen-name');
+      const name=(nameEl&&nameEl.value||'').trim();
+      try{
+        const [preview,branches]=await Promise.all([
+          api(`/api/projects/${encodeURIComponent(pid)}/history/${encodeURIComponent(node)}/reopen-preview`,{method:'POST',body:JSON.stringify(name.length>=2?{name}:{})}),
+          api(`/api/projects/${encodeURIComponent(pid)}/branches`)]);
+        if(historyUi.key!==pid||historyUi.reopenNode!==node)return;
+        historyUi.preview=preview;
+        historyUi.expectedVersion=Number.isInteger(branches&&branches.version)?branches.version:null;
+        historyUi.previewStatus='ready';
+      }catch(e){
+        if(historyUi.key!==pid||historyUi.reopenNode!==node)return;
+        historyUi.previewError=e.message;historyUi.previewStatus='error';
+      }
+      histReopenRender();
+    }
+    function histReopenRender(){
+      const body=$('#reopen-preview-body');if(!body)return;
+      const status=$('#reopen-status');
+      if(status){status.textContent=historyUi.confirmError||historyUi.confirmHint||'';status.style.color=historyUi.confirmError?'var(--danger)':''}
+      const confirm=$('#reopen-confirm');
+      if(confirm){confirm.disabled=historyUi.previewStatus!=='ready'||historyUi.expectedVersion==null||historyUi.confirming;confirm.textContent=historyUi.confirming?'正在创建新分支…':'确认创建新分支'}
+      if(historyUi.previewStatus==='idle'){body.innerHTML='';return}
+      if(historyUi.previewStatus==='loading'){body.innerHTML='<div class="skeleton"></div><div class="skeleton"></div><p style="color:var(--muted);font-size:13px">正在生成只读重开预览…</p>';return}
+      if(historyUi.previewStatus==='error'){
+        body.innerHTML=`<div class="empty"><div><div class="empty__icon">${icons.info}</div><h3>预览生成失败</h3><p>${escapeHtml(historyUi.previewError)}</p><button type="button" class="btn btn--secondary" id="reopen-preview-retry">重试预览</button></div></div>`;
+        const r=$('#reopen-preview-retry');if(r)r.addEventListener('click',()=>histReopenFetch());
+        return;
+      }
+      const p=historyUi.preview||{};
+      const nb=p.new_branch||{};
+      const inv=Array.isArray(p.invalidated_confirmations)?p.invalidated_confirmations:[];
+      body.innerHTML=`<p class="hint">只读预览：确认前不会创建分支、不会移动当前 head，也不会修改任何历史；取消此对话框不产生任何写入。</p><dl class="kv"><dt>源节点</dt><dd>${escapeHtml(p.checkpoint||'—')}</dd><dt>父分支</dt><dd>${escapeHtml(p.parent_branch||'—')}（${escapeHtml(String(p.parent_branch_id||'—').slice(0,18))}…）</dd><dt>fork checkpoint</dt><dd>${escapeHtml(nb.fork_checkpoint||'—')}</dd><dt>新分支</dt><dd>使用下方输入的名称，留空则由服务端自动生成</dd></dl><h4 style="margin:12px 0 6px">重开后将失效的既有确认关系</h4><div class="hist-chips">${inv.map(k=>`<span class="hist-chip">${escapeHtml(HIST_INVALIDATED_LABELS[k]||k)}</span>`).join('')||'<span class="hist-chip">无</span>'}</div>`;
+    }
+    async function histReopenConfirm(){
+      if(historyUi.confirming||historyUi.previewStatus!=='ready'||historyUi.expectedVersion==null)return;
+      const pid=historyUi.key,preview=historyUi.preview;
+      if(!pid||!preview)return;
+      const nameEl=$('#reopen-name'),actorEl=$('#reopen-actor');
+      const name=(nameEl&&nameEl.value||'').trim(),actor=(actorEl&&actorEl.value||'').trim();
+      const nameOk=!name||/^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$/.test(name);
+      const ne=$('#reopen-name-error'),ae=$('#reopen-actor-error');
+      if(ne)ne.textContent=nameOk?'':'分支名称需为 2–64 位字母、数字、下划线或连字符。';
+      if(ae)ae.textContent=actor?'':'请填写操作者标识。';
+      if(!actor||!nameOk)return;
+      historyUi.confirming=true;historyUi.confirmError='';historyUi.confirmHint='正在创建新分支…';
+      histReopenRender();
+      const body={checkpoint:preview.checkpoint,actor,expected_version:historyUi.expectedVersion};
+      if(name)body.name=name;
+      try{
+        const result=await api(`/api/projects/${encodeURIComponent(pid)}/branches`,{method:'POST',body:JSON.stringify(body)});
+        try{localStorage.setItem('studio-actor',actor)}catch{}
+        histReopenClose();
+        toast(`已从历史节点创建并切换到新分支${name?`：${name}`:'。'}`);
+        if(result&&result.project)state.current=result.project;
+        else state.current=await api(`/api/projects/${encodeURIComponent(pid)}`);
+        histReset();
+        await loadProjects();
+        renderProject();renderNav();
+      }catch(e){
+        historyUi.confirmHint='';
+        if(e&&e.status===409&&/版本冲突/.test(e.message||'')){
+          try{const branches=await api(`/api/projects/${encodeURIComponent(pid)}/branches`);if(Number.isInteger(branches&&branches.version))historyUi.expectedVersion=branches.version}catch{}
+          historyUi.confirmError='分支版本冲突：其他操作已移动分支状态。已刷新最新版本，请核对后再次确认。';
+        }else if(e&&e.status===404){historyUi.confirmError=`历史节点或分支已不存在：${e.message}`}
+        else if(e&&e.status===422){historyUi.confirmError=`输入未通过校验：${e.message}`}
+        else if(e&&e.status===423){historyUi.confirmError='工程正在由另一个流程处理，请稍后重试。'}
+        else if(e&&e.status===409){historyUi.confirmError=e.message}
+        else{historyUi.confirmError=`创建未完成：${e.message}`}
+      }finally{historyUi.confirming=false;histReopenRender()}
+    }
+    function histReopenClose(){const dlg=$('#reopen-dialog');if(dlg&&dlg.close)dlg.close();histReopenReset()}
     function renderTimeline(events=[]){const recent=events.slice(-6).reverse();if(!recent.length)return '<p style="color:var(--muted)">暂无活动记录。</p>';return `<div class="timeline">${recent.map(e=>`<div class="timeline__item"><strong>${escapeHtml(eventLabel(e))}</strong><time>${formatDate(e.timestamp)}</time></div>`).join('')}</div>`}function eventLabel(e){const x={project_created:'创建工程',step_started:'开始处理',step_succeeded:'完成节点',step_failed:'处理失败',branch_created:'创建分支',retry_started:'开始重试',inspection_completed:'完成画面质检',rework_completed:'完成画面返工'};return `${x[e.type]||'记录进度'}${e.state?' · '+(labels[e.state]||e.state):''}`}function formatDate(v){if(!v)return '—';try{return new Intl.DateTimeFormat('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(v))}catch{return v}}
     async function advance(payload={},endpoint='advance'){
       if(!state.current||jobUi.busy)return;
@@ -245,7 +481,7 @@
     function closeSidebar(){$('#sidebar').classList.remove('is-open');$('#menu-button').setAttribute('aria-expanded','false')}
     document.addEventListener('click',e=>{const project=e.target.closest('[data-project]'),n=e.target.closest('[data-new]'),action=e.target.closest('[data-action]'),confirm=e.target.closest('[data-confirm]'),manual=e.target.closest('[data-manual]'),quality=e.target.closest('[data-quality]'),candidate=e.target.closest('[data-candidate]');if(project)openProject(project.dataset.project);if(n)showCreate();if(action)advance({},action.dataset.action==='retry'?'retry':'advance');if(confirm){const actor=prompt('请输入操作者标识');if(!actor)return;if(confirm.dataset.confirm==='task')advance({task_spec_action:'confirm',actor});if(confirm.dataset.confirm==='final')advance({final_action:'confirm',actor});if(confirm.dataset.confirm==='continue')advance({final_action:'continue',actor})}if(manual)advance({manual_action:manual.dataset.manual});if(quality){const actor=prompt('请输入操作者标识');if(!actor)return;const expense_confirmed=quality.dataset.quality!=='continue_generation'||confirm('继续生成将开启新的付费预算段。确认本次费用影响并继续？');if(expense_confirmed)advance({quality_action:quality.dataset.quality,actor,expense_confirmed,idempotency_key:`quality-${quality.dataset.quality}-${Date.now()}`})}if(candidate){$$('[data-candidate]').forEach(x=>x.setAttribute('aria-pressed',String(x===candidate)));$('#select-button').disabled=false;$('#select-button').dataset.selected=candidate.dataset.candidate}});
     document.addEventListener('submit',e=>{if(e.target.id==='answer-form'){e.preventDefault();const fd=new FormData(e.target),answers={};for(const [k,v] of fd){if(k.endsWith('__custom'))continue;const custom=fd.get(`${k}__custom`);answers[k]=String(custom||v).trim()}advance({clarification_answers:answers})}});
-    $('#content').addEventListener('click',e=>{const btn=e.target.closest('#select-button');if(btn&&state.current?.snapshot?.phase==='waiting_master_selection'&&btn.dataset.selected)advance({selected_id:btn.dataset.selected})});$('#new-button').addEventListener('click',showCreate);$('#refresh-button').addEventListener('click',()=>state.current?openProject(state.current.project_id):loadProjects().then(renderHome));$('#project-form').addEventListener('submit',createProject);$$('[data-close]').forEach(b=>b.addEventListener('click',closeDialog));$('#project-dialog').addEventListener('cancel',e=>{e.preventDefault();closeDialog()});$('#menu-button').addEventListener('click',()=>{const open=$('#sidebar').classList.toggle('is-open');$('#menu-button').setAttribute('aria-expanded',String(open))});
+    $('#content').addEventListener('click',e=>{const btn=e.target.closest('#select-button');if(btn&&state.current?.snapshot?.phase==='waiting_master_selection'&&btn.dataset.selected)advance({selected_id:btn.dataset.selected})});$('#new-button').addEventListener('click',showCreate);$('#refresh-button').addEventListener('click',()=>state.current?openProject(state.current.project_id):loadProjects().then(renderHome));$('#project-form').addEventListener('submit',createProject);const onInit=(id,ev,fn)=>{const el=$('#'+id);if(el)el.addEventListener(ev,fn)};onInit('reopen-close','click',histReopenClose);onInit('reopen-cancel','click',histReopenClose);onInit('reopen-confirm','click',histReopenConfirm);onInit('reopen-dialog','cancel',e=>{e.preventDefault();histReopenClose()});$$('[data-close]').forEach(b=>b.addEventListener('click',closeDialog));$('#project-dialog').addEventListener('cancel',e=>{e.preventDefault();closeDialog()});$('#menu-button').addEventListener('click',()=>{const open=$('#sidebar').classList.toggle('is-open');$('#menu-button').setAttribute('aria-expanded',String(open))});
     loadProjects().then(renderHome);
   </script>
 </body>
