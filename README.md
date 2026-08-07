@@ -122,6 +122,10 @@ python3 main.py --projects-root ./projects --debug inspect demo
 
 可用 `--model-config <path>` 为一次 `new`、`resume`、`retry` 或带 `--continue` 的 `rewind` 指定配置。路由在状态/迭代边界重读文件，单次模型调用中途不会切换配置。
 
+### 图片型风格 Skill
+
+`skills/style_cards/index.json` 是唯一风格目录。每个已批准条目必须具备唯一、稳定的 `style_index`，以及仓库受控参考图和真实 SHA-256；加载时会校验索引身份、目录边界、文件存在性、哈希和重复索引，任何异常均按 Skill 失败策略阻断或显式降级。候选方向依据已确认任务内容与条目的名称、标签、适用场景排序，从目录中选择五个不同构图机制，不允许运行时编造风格条目。每个输出方向包含选择原因、艺术理念、任务适配点、可借鉴机制和主要风险。
+
 ### `configs/runtime.yaml`
 
 该文件描述运行策略，包括澄清问题数量与总预算、渲染/质检重试次数、输出尺寸，以及 `self_check` 的终止和逐轮放行策略。四种组合及边界语义详见完整指南。

@@ -47,7 +47,7 @@ class StyleIdeaGenerator:
     ) -> StyleIdeaCard:
         """Generate one style idea card through VLM when possible."""
 
-        reference_asset = style_card.reference_assets[0] if style_card.reference_assets else None
+        reference_asset = style_card.reference_image.path
         if self.client is not None and reference_asset:
             try:
                 payload = self.client.inspect(reference_asset, self._prompt(task_card, confirmation_doc, style_card))
@@ -70,10 +70,13 @@ class StyleIdeaGenerator:
         return StyleIdeaCard(
             task_id=task_card.task_id,
             source_style_id=style_card.style_id,
+            style_index=style_card.style_index,
             title=str(payload["title"]),
             composition=str(payload["composition"]),
             material=str(payload["material"]),
             fit_reason=str(payload["fit_reason"]),
+            artistic_philosophy=str(payload["artistic_philosophy"]),
+            adaptable_mechanism=str(payload["adaptable_mechanism"]),
             major_risk=str(payload["major_risk"]),
             prompt_supplement=str(payload["prompt_supplement"]),
             reference_asset=reference_asset,
@@ -93,10 +96,13 @@ class StyleIdeaGenerator:
         return StyleIdeaCard(
             task_id=task_card.task_id,
             source_style_id=style_card.style_id,
+            style_index=style_card.style_index,
             title=style_card.style_name or style_card.style_id,
             composition=style_card.composition,
             material=material,
-            fit_reason="该方向与任务目标和使用场景保持一致，同时提供可区分的视觉机制。",
+            fit_reason=f"适用于任务目标与使用场景；目录标注适用范围为：{'、'.join(style_card.best_for)}。",
+            artistic_philosophy=f"以“{style_card.style_name}”建立信息秩序，在表达效率与视觉辨识度之间保持平衡。",
+            adaptable_mechanism=f"借鉴{style_card.composition}，以及{material}；不复制参考图的具体主体或独特表达。",
             major_risk=risk,
             prompt_supplement=(
                 f"构图方向：{style_card.composition}\n"
@@ -119,7 +125,8 @@ class StyleIdeaGenerator:
             "请阅读参考图并为通用图片生成流程输出一个中文风格理念卡。"
             "不得加入任务卡和确认书以外的具体业务事实。只返回 JSON："
             '{"title":"string","composition":"string","material":"string",'
-            '"fit_reason":"string","major_risk":"string","prompt_supplement":"string"}\n'
+            '"fit_reason":"string","artistic_philosophy":"string","adaptable_mechanism":"string",'
+            '"major_risk":"string","prompt_supplement":"string"}\n'
             f"任务卡：{json.dumps(task_card.model_dump(mode='json'), ensure_ascii=False)}\n"
             f"确认书：{json.dumps(confirmation_doc.model_dump(mode='json'), ensure_ascii=False)}\n"
             f"风格卡：{json.dumps(style_card.model_dump(mode='json'), ensure_ascii=False)}"
