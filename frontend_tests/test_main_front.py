@@ -3,11 +3,20 @@ from __future__ import annotations
 
 from pathlib import Path
 import base64
+import json
+import multiprocessing
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 import main_front
+
+
+def _claim_mkdir_and_crash(projects_root: str, project_id: str, key: str, raw_hash: str) -> None:
+    main_front.ProjectStore.claim_design_task(projects_root, project_id, key, raw_hash)
+    (Path(projects_root) / project_id).mkdir()
+    os._exit(91)
 
 
 @pytest.fixture()
@@ -97,12 +106,12 @@ def test_envelope_creation_recovers_after_claim_then_create_crash(
     original = main_front.ProjectStore.create
     calls = 0
 
-    def crash_once(store, config=None):
+    def crash_once(store, config=None, recovery_claim=None):
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("injected crash after claim")
-        return original(store, config)
+        return original(store, config, recovery_claim=recovery_claim)
 
     monkeypatch.setattr(main_front.ProjectStore, "create", crash_once)
     body = {"project_id": "crash-recovery", "envelope": envelope, "offline": True}
@@ -110,6 +119,66 @@ def test_envelope_creation_recovers_after_claim_then_create_crash(
     recovered = client.post("/api/projects", json=body)
     assert recovered.status_code == 201, recovered.text
     assert recovered.json()["project_id"] == "crash-recovery"
+
+
+def test_envelope_http_recovers_empty_directory_left_by_crashed_claim_owner(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    envelope = json.loads(Path("examples/design_task_envelope_v1.valid.json").read_text(encoding="utf-8"))
+    envelope["task"]["project_id"] = "crash-after-mkdir"
+    raw_hash = main_front.content_hash(envelope)
+    process = multiprocessing.Process(
+        target=_claim_mkdir_and_crash,
+        args=(str(main_front.PROJECTS_ROOT), "crash-after-mkdir", envelope["idempotency_key"], raw_hash),
+    )
+    process.start(); process.join(timeout=10)
+    assert process.exitcode == 91
+
+    runs = []
+    original_runner = main_front._runner
+
+    def counted_runner(*args, **kwargs):
+        runner = original_runner(*args, **kwargs)
+        original_run = runner.run
+        runner.run = lambda *run_args, **run_kwargs: (runs.append(True), original_run(*run_args, **run_kwargs))[1]
+        return runner
+
+    monkeypatch.setattr(main_front, "_runner", counted_runner)
+    body = {"project_id": "crash-after-mkdir", "envelope": envelope, "offline": True}
+    recovered = client.post("/api/projects", json=body)
+    assert recovered.status_code == 201, recovered.text
+    repeated = client.post("/api/projects", json=body)
+    assert repeated.status_code == 201, repeated.text
+    assert len(runs) == 1
+    events = main_front.ProjectStore(main_front.PROJECTS_ROOT, "crash-after-mkdir").history()
+    assert sum(event["type"] == "project_created" for event in events) == 1
+
+
+@pytest.mark.parametrize("entry", ["manifest.json", "unknown.bin"])
+def test_claim_recovery_never_overwrites_existing_or_unknown_project_data(
+    client: TestClient, entry: str
+) -> None:
+    envelope = json.loads(Path("examples/design_task_envelope_v1.valid.json").read_text(encoding="utf-8"))
+    envelope["idempotency_key"] = f"protected-{entry}"
+    envelope["task"]["project_id"] = f"protected-{entry.split('.')[0]}"
+    project_id = envelope["task"]["project_id"]
+    raw_hash = main_front.content_hash(envelope)
+    main_front.ProjectStore.claim_design_task(
+        main_front.PROJECTS_ROOT, project_id, envelope["idempotency_key"], raw_hash
+    )
+    root = main_front.PROJECTS_ROOT / project_id
+    root.mkdir()
+    marker = root / entry
+    marker.write_bytes(b"do-not-touch")
+    main_front.ProjectStore.abandon_design_task(
+        main_front.PROJECTS_ROOT, envelope["idempotency_key"], raw_hash, project_id
+    )
+
+    response = client.post(
+        "/api/projects", json={"project_id": project_id, "envelope": envelope, "offline": True}
+    )
+    assert response.status_code == 409
+    assert marker.read_bytes() == b"do-not-touch"
 
 
 def test_http_task_spec_confirmation_contract(client: TestClient) -> None:

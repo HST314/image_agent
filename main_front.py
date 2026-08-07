@@ -241,7 +241,8 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
                     metadata.update({"design_task_schema_version": envelope.schema_version,
                                      "idempotency_key": envelope.idempotency_key,
                                      "raw_task_sha256": raw_hash})
-                store.create(metadata)
+                recovery_claim = (envelope.idempotency_key, raw_hash) if envelope and store.root.exists() else None
+                store.create(metadata, recovery_claim=recovery_claim)
                 if envelope:
                     ProjectStore.finish_design_task(PROJECTS_ROOT, envelope.idempotency_key, raw_hash, claimed_project)
                 _runner(store, body.offline).run({"task_card": claimed_task.model_dump(mode="json"),
