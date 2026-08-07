@@ -318,6 +318,9 @@ class WorkflowRunner:
         category_description = category_skill.prompt_injection.category_description if category_skill else ""
 
         slot_identities = [idea.style_index for idea in idea_cards]
+        prompt_version = "style-candidate-v2"
+        style_by_index = {card.style_index: card for card in style_cards}
+        style_audit: list[dict[str, Any]] = []
 
         def render(index: int) -> dict[str, Any]:
             idea = idea_cards[index] if index < len(idea_cards) else None
@@ -327,6 +330,18 @@ class WorkflowRunner:
             # Scheme B invariant: reference images are VLM-only and never image-provider inputs.
             slot_key = content_hash(["initial_candidate_generation", spec.content_hash, index, idea.style_index])
             result = self._image_call("initial_candidate_generation", prompt, [], index=index, idempotency_key=slot_key)
+            card = style_by_index[idea.style_index]
+            style_audit.append({
+                "slot": index,
+                "style_index": idea.style_index,
+                "style_entry_version": card.version,
+                "vlm_input_asset_sha256": card.reference_image.sha256,
+                "structured_output": idea.model_dump(mode="json"),
+                "prompt_version": prompt_version,
+                "prompt_sha256": content_hash(prompt),
+                "render_idempotency_key": slot_key,
+                "render_reference_count": 0,
+            })
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
 
         batch = CandidateBatchGenerator(self.store, render, attempts=self.policy.max_render_retries + 1,
@@ -336,6 +351,7 @@ class WorkflowRunner:
         if batch["failed"]: 
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
         return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards],
+                "style_scheme": "B", "style_slot_audit": sorted(style_audit, key=lambda item: item["slot"]),
                 "skill_status": "degraded" if degraded_reasons else "ready",
                 "skill_degradation_reasons": degraded_reasons}
 

@@ -3,13 +3,24 @@
   "$id": "https://image-agent.local/schemas/AsyncJob.v1.schema.json",
   "title": "AsyncJob v1",
   "type": "object",
-  "required": ["job_id", "idempotency_key", "status", "created_at", "updated_at", "attempt"],
+  "required": ["job_id", "idempotency_key", "status", "progress", "heartbeat_at", "created_at", "updated_at", "attempt"],
   "properties": {
     "job_id": {"type": "string", "pattern": "^job_[a-f0-9]{32}$"},
     "idempotency_key": {"type": "string", "minLength": 8, "maxLength": 128},
-    "status": {"enum": ["queued", "running", "succeeded", "failed", "cancelled"]},
+    "status": {"enum": ["queued", "running", "succeeded", "failed", "cancel_requested", "cancelled"]},
     "cancel_requested": {"type": "boolean"},
     "attempt": {"type": "integer", "minimum": 0},
+    "progress": {
+      "type": "object",
+      "required": ["completed", "total", "unit"],
+      "properties": {
+        "completed": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 1},
+        "unit": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "heartbeat_at": {"type": ["string", "null"], "format": "date-time"},
     "created_at": {"type": "string", "format": "date-time"},
     "updated_at": {"type": "string", "format": "date-time"},
     "error": {"type": ["object", "null"]}

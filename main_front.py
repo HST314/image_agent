@@ -170,12 +170,14 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
     store = _store(project_id)
     store.events.append("job_started", job_id=job["job_id"], attempt=job["attempt"])
     try:
+        jobs.heartbeat(job["job_id"], completed=0, total=1, unit="workflow")
         payload = job["payload"]
         body = AdvanceRequest.model_validate(payload["options"])
         snapshot = store.resume()
         if snapshot is None:
             raise ValueError("工程还没有可恢复节点。")
         _runner(store, payload["mode"] == "offline").run(snapshot, _options(body))
+        jobs.heartbeat(job["job_id"], completed=1, total=1, unit="workflow")
         finished = jobs.finish(job["job_id"])
         store.events.append("job_finished", job_id=job["job_id"], status=finished["status"])
     except Exception as exc:

@@ -63,7 +63,8 @@ class JobStore:
             job_id = f"job_{uuid4().hex}"
             job = {"job_id": job_id, "idempotency_key": idempotency_key, "payload_hash": payload_hash,
                    "payload": payload, "status": "queued", "cancel_requested": False,
-                   "created_at": _now(), "updated_at": _now(), "attempt": 0}
+                   "progress": {"completed": 0, "total": 1, "unit": "workflow"},
+                   "heartbeat_at": None, "created_at": _now(), "updated_at": _now(), "attempt": 0}
             data["jobs"][job_id] = job
             return dict(job), True
         return self._locked(mutate)
@@ -86,7 +87,22 @@ class JobStore:
             if job["status"] == "running" and _owner_alive(job):
                 return None
             job.update(status="running", owner_pid=os.getpid(), owner_start=_process_start(os.getpid()),
-                       started_at=_now(), updated_at=_now(), attempt=int(job.get("attempt", 0)) + 1)
+                       started_at=_now(), heartbeat_at=_now(), updated_at=_now(),
+                       attempt=int(job.get("attempt", 0)) + 1)
+            return dict(job)
+        return self._locked(mutate)
+
+    def heartbeat(self, job_id: str, *, completed: int, total: int, unit: str) -> dict[str, Any]:
+        """Persist authoritative progress; workers must not manufacture time-based percentages."""
+        if total < 1 or completed < 0 or completed > total:
+            raise ValueError("作业进度必须满足 0 <= completed <= total 且 total >= 1。")
+        def mutate(data: dict[str, Any]) -> dict[str, Any]:
+            job = data["jobs"][job_id]
+            if job["status"] not in {"running", "cancel_requested"}:
+                raise ValueError("只有运行中或请求取消的作业可以更新心跳。")
+            now = _now()
+            job.update(progress={"completed": completed, "total": total, "unit": unit},
+                       heartbeat_at=now, updated_at=now)
             return dict(job)
         return self._locked(mutate)
 
@@ -94,6 +110,9 @@ class JobStore:
         def mutate(data: dict[str, Any]) -> dict[str, Any]:
             job = data["jobs"][job_id]
             status = "cancelled" if job.get("cancel_requested") else ("failed" if error else "succeeded")
+            if status == "succeeded":
+                progress = job.get("progress") or {"total": 1, "unit": "workflow"}
+                job["progress"] = {**progress, "completed": progress["total"]}
             job.update(status=status, error=error, finished_at=_now(), updated_at=_now())
             return dict(job)
         return self._locked(mutate)
@@ -107,6 +126,8 @@ class JobStore:
                 job["cancel_requested"] = True
                 if job["status"] == "queued":
                     job.update(status="cancelled", finished_at=_now())
+                else:
+                    job["status"] = "cancel_requested"
                 job["updated_at"] = _now()
             return dict(job)
         return self._locked(mutate)
@@ -115,7 +136,10 @@ class JobStore:
         def mutate(data: dict[str, Any]) -> list[str]:
             result = []
             for job in data["jobs"].values():
-                if job["status"] == "queued" or (job["status"] == "running" and not _owner_alive(job)):
+                if job["status"] == "queued" or (job["status"] in {"running", "cancel_requested"} and not _owner_alive(job)):
+                    if job.get("cancel_requested"):
+                        job.update(status="cancelled", finished_at=_now(), updated_at=_now())
+                        continue
                     job.update(status="queued", updated_at=_now())
                     result.append(job["job_id"])
             return result

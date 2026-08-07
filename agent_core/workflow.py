@@ -1,7 +1,49 @@
 """Explicit workflow transitions and orthogonal self-check policies."""
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypedDict
+
+
+class StateDefinition(TypedDict):
+    actions: tuple[str, ...]
+    gate: str
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    paid: bool
+    reentry: str
+    successors: tuple[str, ...]
+
+
+# Canonical product-state catalogue. Runtime handlers may keep coarse legacy
+# names, but UI/action contracts and migrations derive from this sole source.
+STATE_DEFINITIONS: dict[str, StateDefinition] = {
+    "received": {"actions": ("start_clarification",), "gate": "valid_immutable_inbound", "inputs": ("design_task_envelope",), "outputs": ("task_card",), "paid": False, "reentry": "inbound_idempotency_key", "successors": ("clarifying",)},
+    "clarifying": {"actions": ("answer", "build_spec"), "gate": "clarification_budget", "inputs": ("task_card",), "outputs": ("clarification_answers",), "paid": False, "reentry": "question_fingerprint", "successors": ("task_spec_building",)},
+    "task_spec_building": {"actions": ("build_spec",), "gate": "clarification_resolved", "inputs": ("clarification_answers",), "outputs": ("task_specification",), "paid": False, "reentry": "task_spec_content_hash", "successors": ("waiting_task_spec_confirmation",)},
+    "waiting_task_spec_confirmation": {"actions": ("edit_task_spec", "confirm_task_spec"), "gate": "human_decision", "inputs": ("task_specification",), "outputs": ("task_spec_confirmation",), "paid": False, "reentry": "confirmation_subject_hash", "successors": ("task_spec_building", "category_analysis")},
+    "category_analysis": {"actions": ("analyze_category",), "gate": "valid_confirmation_and_p0_paid_gate", "inputs": ("confirmed_task_spec",), "outputs": ("category_constraints",), "paid": True, "reentry": "confirmed_spec_hash", "successors": ("style_selection_vlm",)},
+    "style_selection_vlm": {"actions": ("select_and_interpret_styles",), "gate": "five_legal_styles_and_p0_paid_gate", "inputs": ("confirmed_task_spec", "style_library"), "outputs": ("style_slot_audit",), "paid": True, "reentry": "spec_and_library_hash", "successors": ("five_candidate_generation",)},
+    "five_candidate_generation": {"actions": ("generate_candidates", "retry_failed_slots"), "gate": "five_valid_vlm_outputs_and_p0_paid_gate", "inputs": ("style_slot_audit",), "outputs": ("five_candidates",), "paid": True, "reentry": "slot_idempotency_key", "successors": ("waiting_master_selection",)},
+    "waiting_master_selection": {"actions": ("select_master",), "gate": "human_decision", "inputs": ("five_candidates",), "outputs": ("master_asset",), "paid": False, "reentry": "decision_idempotency_key", "successors": ("quality_rework",)},
+    "quality_rework": {"actions": ("inspect", "rework"), "gate": "p0_paid_gate_and_round_limit", "inputs": ("master_or_reworked_asset",), "outputs": ("inspection", "reworked_asset"), "paid": True, "reentry": "asset_hash_and_round", "successors": ("quality_rework", "waiting_human_decision", "waiting_final_confirmation")},
+    "waiting_human_decision": {"actions": ("continue_generation", "manual_rework", "abandon"), "gate": "human_decision", "inputs": ("failed_checks",), "outputs": ("quality_disposition",), "paid": False, "reentry": "decision_idempotency_key", "successors": ("quality_rework", "human_rework", "terminated")},
+    "human_rework": {"actions": ("submit_rework",), "gate": "human_prompt_or_guidance_and_p0_paid_gate", "inputs": ("current_asset", "guidance"), "outputs": ("reworked_asset",), "paid": True, "reentry": "asset_guidance_prompt_hash", "successors": ("reinspection",)},
+    "reinspection": {"actions": ("inspect",), "gate": "p0_paid_gate", "inputs": ("reworked_asset",), "outputs": ("inspection",), "paid": True, "reentry": "asset_hash_and_round", "successors": ("waiting_human_decision", "waiting_final_confirmation")},
+    "waiting_final_confirmation": {"actions": ("confirm_final", "continue_modifying"), "gate": "human_decision_and_latest_inspection", "inputs": ("checked_asset",), "outputs": ("final_confirmation",), "paid": False, "reentry": "confirmation_subject_hash", "successors": ("human_rework", "delivery_frozen")},
+    "delivery_frozen": {"actions": ("generate_note",), "gate": "valid_final_confirmation", "inputs": ("final_asset",), "outputs": ("frozen_delivery",), "paid": False, "reentry": "delivery_content_hash", "successors": ("delivery_return",)},
+    "delivery_return": {"actions": ("generate_note", "manual_return"), "gate": "frozen_delivery", "inputs": ("frozen_delivery",), "outputs": ("design_note", "return_receipt"), "paid": False, "reentry": "delivery_version", "successors": ()},
+    "terminated": {"actions": (), "gate": "none", "inputs": ("quality_disposition",), "outputs": (), "paid": False, "reentry": "none", "successors": ()},
+}
+
+
+WAITING_STATES = frozenset(name for name in STATE_DEFINITIONS if name.startswith("waiting_"))
+
+
+def allowed_actions(state: str) -> tuple[str, ...]:
+    try:
+        return STATE_DEFINITIONS[state]["actions"]
+    except KeyError as exc:
+        raise InvalidTransitionError(f"未知产品状态：{state}") from exc
 
 TransitionMap = dict[str, frozenset[str]]
 TRANSITIONS: TransitionMap = {

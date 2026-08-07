@@ -209,6 +209,15 @@ def test_runner_makes_five_vlm_calls_then_five_text_only_image_calls(tmp_path: P
     )
 
     assert len(vlm_calls) == len(image_calls) == len(result["candidates"]) == 5
+    assert result["style_scheme"] == "B"
+    assert [item["slot"] for item in result["style_slot_audit"]] == list(range(5))
+    assert all(item["style_entry_version"] and len(item["vlm_input_asset_sha256"]) == 64
+               and item["prompt_version"] == "style-candidate-v2"
+               and item["render_reference_count"] == 0
+               for item in result["style_slot_audit"])
+    assert [item["style_index"] for item in result["style_slot_audit"]] == [
+        item["style_index"] for item in result["style_idea_cards"]
+    ]
     assert all(references == [] for _, references, _, _ in image_calls)
     assert {index for _, _, index, _ in image_calls} == set(range(5))
     assert len({key for _, _, _, key in image_calls}) == 5

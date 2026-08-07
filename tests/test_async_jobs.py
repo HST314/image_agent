@@ -50,6 +50,22 @@ def test_async_job_schema_accepts_persisted_status(tmp_path: Path) -> None:
     jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(job)
 
 
+def test_job_persists_heartbeat_progress_and_cancel_requested(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "observable-job")
+    store.create()
+    jobs = JobStore(store.root)
+    job, _ = jobs.create("observable-key", {"options": {}, "mode": "offline"})
+    assert job["progress"] == {"completed": 0, "total": 1, "unit": "workflow"}
+    assert job["heartbeat_at"] is None
+    jobs.claim(job["job_id"])
+    running = jobs.heartbeat(job["job_id"], completed=2, total=5, unit="candidate")
+    assert running["progress"] == {"completed": 2, "total": 5, "unit": "candidate"}
+    assert running["heartbeat_at"]
+    cancelling = jobs.cancel(job["job_id"])
+    assert cancelling["status"] == "cancel_requested"
+    assert jobs.finish(job["job_id"])["status"] == "cancelled"
+
+
 def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "slots")
     store.create()
