@@ -110,6 +110,64 @@ class EventStore:
             return []
         return [json.loads(line) for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
+    def scan(self, *, after: int = 0, through: int | None = None,
+             limit: int = 100) -> tuple[list[dict[str, Any]], int | None]:
+        """Read a bounded sequence window without materialising the JSONL file."""
+        if after < 0 or limit < 1:
+            raise ValueError("事件查询范围无效。")
+        items: list[dict[str, Any]] = []
+        last_sequence: int | None = None
+        if not self.path.exists():
+            return items, last_sequence
+        with self.path.open("r", encoding="utf-8") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            try:
+                for raw in stream:
+                    if not raw.strip():
+                        continue
+                    event = json.loads(raw)
+                    sequence = int(event.get("sequence", 0))
+                    last_sequence = sequence
+                    if sequence <= after:
+                        continue
+                    if through is not None and sequence > through:
+                        break
+                    if len(items) < limit:
+                        items.append(event)
+                    else:
+                        break
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        return items, last_sequence
+
+    def last_sequence(self) -> int:
+        """Find the durable high-water mark with constant memory."""
+        last = 0
+        if not self.path.exists():
+            return last
+        with self.path.open("r", encoding="utf-8") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            try:
+                for raw in stream:
+                    if raw.strip():
+                        last = int(json.loads(raw).get("sequence", last))
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        return last
+
+    def iter_readonly(self) -> Iterator[dict[str, Any]]:
+        """Yield a consistent read snapshot under a shared file lock."""
+        if not self.path.exists():
+            return
+        with self.path.open("r", encoding="utf-8") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            try:
+                for raw in stream:
+                    if raw.strip():
+                        yield json.loads(raw)
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
 
 class _LegacyPromptStore:
     SECRET_WORDS = ("api_key", "apikey", "authorization", "token", "secret")
