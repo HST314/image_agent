@@ -37,6 +37,9 @@ class CalibrationLoop:
             self.presenter(number, result)
             checked_hash = str(current["sha256"])
             choice = ManualAction(action="execute")
+            proposed = approve(result) if approve is not None else None
+            if proposed is not None and result.decision != "pass" and proposed.action == "accept_current":
+                raise ValueError("未通过图不能作为已通过资产接受或进入最终确认。")
             # A blocked inspection can never flow through automatically. Solo
             # mode explicitly requires a human disposition; manual policies do
             # so for every inspection.
@@ -48,7 +51,7 @@ class CalibrationLoop:
                             "inspection": result.model_dump(mode="json"), "calibration_status": "waiting_human_decision",
                             "termination_satisfied": False, "termination_reason": "inspection_blocked" if result.decision == "blocked" else "manual_release_required",
                             "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
-                choice = approve(result)
+                choice = proposed or choice
             if choice.action == "end":
                 self.store.events.append("calibration_terminated_without_delivery", round=number, asset_hash=checked_hash, decision=result.decision)
                 return {"waiting": True, "phase": "terminated_without_delivery", "round": number, "asset": current,
@@ -56,6 +59,8 @@ class CalibrationLoop:
                         "termination_satisfied": False, "termination_reason": "human_ended_without_delivery",
                         "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
             if choice.action == "accept_current":
+                if result.decision != "pass":
+                    raise ValueError("未通过图不能作为已通过资产接受或进入最终确认。")
                 self.store.events.append("calibration_current_asset_accepted", round=number, asset_hash=checked_hash,
                                          decision=result.decision, policy=self.policy.__dict__)
                 return {"waiting": False, "phase": "calibration_completed", "round": number, "asset": current,
@@ -87,12 +92,14 @@ class CalibrationLoop:
                 reason = "fixed_round_limit" if self.policy.termination == "fix" else "solo_round_limit"
                 self.store.events.append("calibration_round_limit_reached", round=number, asset_hash=checked_hash,
                                          decision=result.decision, policy=self.policy.__dict__)
-                self.store.checkpoint("self_check_iteration", {"phase": "waiting_human_approval", "round": number,
+                self.store.checkpoint("self_check_iteration", {"phase": "waiting_quality_disposition", "round": number,
                     "asset": current, "inspection": result.model_dump(mode="json"),
-                    "latest_checked_asset_hash": checked_hash, "termination_reason": reason})
-                return {"waiting": True, "phase": "waiting_human_approval", "round": number,
+                    "failed_items": result.deviations, "latest_checked_asset_hash": checked_hash,
+                    "termination_reason": reason})
+                return {"waiting": True, "phase": "waiting_quality_disposition", "round": number,
                         "reason": "已达到质检轮次上限，请人工决定。", "asset": current,
-                        "inspection": result.model_dump(mode="json"), "calibration_status": "waiting_human_decision",
+                        "inspection": result.model_dump(mode="json"), "failed_items": result.deviations,
+                        "calibration_status": "waiting_human_disposition",
                         "termination_satisfied": False, "termination_reason": reason,
                         "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
             if choice.action != "skip":

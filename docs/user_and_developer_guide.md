@@ -396,3 +396,17 @@ python3 -m pytest -q
 - 新资产会使旧质检事实失效并触发复检。
 - 恢复、重试和 rewind 不覆盖旧 Checkpoint、Prompt 或资产。
 - 全量测试通过，而非只运行单个组件测试。
+# 自动质检上限后的人工分流
+
+当 `self_check.max_rounds`（或固定轮数策略）耗尽且最新质检仍未通过时，工程进入
+`waiting_quality_disposition`。此等待是可恢复的人工检查点，不是失败；服务端不会继续
+调用视觉检查或生图模型，并在快照的 `failed_items` 中保留未通过项。
+
+通过工程推进接口提交 `quality_action`、`actor` 和 `idempotency_key`：
+
+- `continue_generation`：按当前未通过项生成一次新资产，并从第 1 轮开启新的配置预算；
+- `manual_rework`：转入既有 `waiting_human_rework` 人工微调入口，不立即付费；
+- `abandon`：进入不可交付的 `abandoned` 终态。
+
+动作只允许从上述等待态提交；同一幂等键重复提交返回已持久化结果，不重复付费。不同
+动作复用同一幂等键、缺少操作者/幂等键以及试图将未通过资产标为通过都会被拒绝。

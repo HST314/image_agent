@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from agent_core.batch import CandidateBatchGenerator
 from agent_core.models import ImageTaskCard, ModelRole, StyleIdeaCard, TaskSpecification, VisualCheckResult, VisualInspectionOutput
@@ -118,6 +118,8 @@ class RunnerOptions:
     final_action: str | None = None
     actor: str | None = None
     clarification_answers: dict[str, Any] | None = None
+    quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
+    idempotency_key: str | None = None
 
 
 class WorkflowRunner:
@@ -147,7 +149,7 @@ class WorkflowRunner:
 
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
-        if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection"}:
+        if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection", "waiting_quality_disposition"}:
             return str(snapshot.get("state"))
         if snapshot.get("phase") == "waiting_human_rework":
             return "human_prompt_iteration"
@@ -352,6 +354,9 @@ class WorkflowRunner:
         return {"master_asset": self.workflow.select_master(data["candidates"], selected), "waiting": False, "phase": "master_selected"}
 
     def _self_check(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        quality_action = options.get("quality_action")
+        if quality_action:
+            return self._quality_disposition(data, options)
         spec = TaskSpecification.model_validate(data["task_specification"])
         policy_data = data.get("self_check_policy", self.policy.self_check.model_dump(mode="json"))
         policy_data = dict(policy_data)
@@ -365,6 +370,48 @@ class WorkflowRunner:
                           constraints=[], approve=(lambda _: action) if action else None,
                           start_round=int(data.get("round", 1)))
         return {**result, "current_asset": result.get("asset", data.get("master_asset"))}
+
+    def _quality_disposition(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        key = str(options.get("idempotency_key") or "").strip()
+        actor = str(options.get("actor") or "").strip()
+        for event in reversed(self.store.history()):
+            if event.get("type") == "quality_disposition_recorded" and event.get("idempotency_key") == key and key:
+                if event.get("action") != options["quality_action"]:
+                    raise ValueError("同一幂等键不能用于不同人工分流动作。")
+                return dict(event["result"])
+        if data.get("phase") != "waiting_quality_disposition" or data.get("calibration_status") != "waiting_human_disposition":
+            raise ValueError("仅达到质检上限且仍未通过时可提交人工分流动作。")
+        if not key:
+            raise ValueError("人工分流动作必须提供 idempotency_key。")
+        if not actor:
+            raise ValueError("人工分流动作必须提供 actor。")
+        action = options["quality_action"]
+        common = {**data, "quality_disposition": {"action": action, "actor": actor, "idempotency_key": key}}
+        if action == "manual_rework":
+            result = {**common, "waiting": True, "phase": "waiting_human_rework", "completed": False}
+        elif action == "abandon":
+            result = {**common, "waiting": False, "phase": "abandoned", "terminal": True,
+                      "completed": False, "calibration_status": "abandoned",
+                      "termination_satisfied": False, "termination_reason": "human_abandoned"}
+        elif action == "continue_generation":
+            current = data.get("current_asset") or data["asset"]
+            prompt = str((data.get("inspection") or {}).get("rework_prompt_delta") or "按未通过项继续修正画面")
+            call_key = self.store.idempotency_key("quality_continue_generation", key, content_hash(prompt),
+                                                  "image", current["sha256"])
+            generated = normalize_image_asset(self._image_call(
+                "self_check_rework", prompt, [str(current["uri"])], idempotency_key=call_key
+            ))
+            next_data = {**common, "asset": generated, "current_asset": generated, "round": 1,
+                         "quality_cycle": int(data.get("quality_cycle", 1)) + 1, "phase": "round_checkpointed",
+                         "waiting": False, "inspection": None, "failed_items": [],
+                         "latest_checked_asset_hash": None, "calibration_status": "in_progress"}
+            result = self._self_check(next_data, {**options, "quality_action": None})
+            result["quality_cycle"] = next_data["quality_cycle"]
+        else:
+            raise ValueError("未知人工分流动作。")
+        self.store.events.append("quality_disposition_recorded", action=action, actor=actor,
+                                 idempotency_key=key, result=result)
+        return result
     
     def _human_rework(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         prompt = options.get("human_prompt")

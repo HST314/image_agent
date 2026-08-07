@@ -67,6 +67,7 @@ class AdvanceRequest(StrictRequest):
     task_spec_action: Literal["confirm"] | None = None
     final_action: Literal["confirm", "continue"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=256)
+    quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
     offline: bool = False
 
 
@@ -118,6 +119,8 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         final_action=body.final_action,
         actor=body.actor,
         clarification_answers=body.clarification_answers,
+        quality_action=body.quality_action,
+        idempotency_key=body.idempotency_key,
     )
 
 
@@ -141,6 +144,7 @@ def _business_status(snapshot: dict[str, Any]) -> str:
         "waiting_task_spec_confirmation": "waiting_task_spec_confirmation",
         "waiting_master_selection": "waiting_master_selection",
         "waiting_human_approval": "waiting_quality_decision",
+        "waiting_quality_disposition": "waiting_quality_disposition",
         "waiting_human_rework": "waiting_human_rework",
         "waiting_reinspection": "waiting_reinspection",
         "waiting_final_confirmation": "waiting_final_confirmation",
@@ -207,6 +211,8 @@ def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[st
         return ["human_rework", "branch"]
     if phase == "waiting_human_approval":
         return ["review_calibration"]
+    if phase == "waiting_quality_disposition":
+        return ["continue_generation", "manual_rework", "abandon"]
     if phase == "waiting_reinspection":
         return ["resume"]
     if snapshot:
