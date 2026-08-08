@@ -9,12 +9,12 @@ class CandidateBatchGenerator:
         self.store, self.render, self.attempts = store, render, attempts
         self.max_workers = max(1, min(5, max_workers))
 
-    def generate(self, input_hash: str) -> dict[str, list[Any]]:
+    def generate(self, input_hash: str, *, count: int = 5) -> dict[str, list[Any]]:
         successes: list[Any] = []; failures: list[Any] = []
         with self.store.lock():
             events = self.store.events.read_all()
             pending: list[tuple[int, str]] = []
-            for index in range(5):
+            for index in range(count):
                 key = content_hash(["initial_candidate_generation", input_hash, index])
                 cached = next((e.get("asset") for e in reversed(events) if e.get("type") == "candidate_succeeded" and e.get("idempotency_key") == key), None)
                 if cached: successes.append(cached); continue

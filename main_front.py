@@ -20,6 +20,7 @@ from agent_core.models import ImageTaskCard
 from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore
+from configs.runtime_policy import RuntimePolicy
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 
@@ -29,6 +30,7 @@ APP_ROOT = Path(__file__).resolve().parent
 FRONTEND_ROOT = APP_ROOT / "frontend"
 PROJECTS_ROOT = Path(os.getenv("IMAGE_AGENT_FRONT_PROJECTS_ROOT", FRONTEND_ROOT / "data" / "projects")).resolve()
 MODEL_CONFIG = Path(os.getenv("IMAGE_AGENT_MODEL_CONFIG", APP_ROOT / "configs" / "model_config.yaml")).resolve()
+RUNTIME_CONFIG = Path(os.getenv("IMAGE_AGENT_RUNTIME_CONFIG", APP_ROOT / "configs" / "runtime.yaml")).resolve()
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$")
@@ -96,7 +98,7 @@ def _store(project_id: str) -> ProjectStore:
 def _runner(store: ProjectStore, offline: bool) -> WorkflowRunner:
     if not MODEL_CONFIG.is_file():
         raise RuntimeError("模型配置文件不存在，请设置 IMAGE_AGENT_MODEL_CONFIG。")
-    return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline)
+    return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline, runtime_policy=RuntimePolicy.from_file(RUNTIME_CONFIG))
 
 
 def _options(body: AdvanceRequest) -> RunnerOptions:
@@ -217,7 +219,8 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
         def execute() -> dict[str, Any]:
             store = _store(project_id)
-            store.create()
+            policy = RuntimePolicy.from_file(RUNTIME_CONFIG)
+            store.create({"runtime_policy": policy.snapshot("offline" if body.offline else "real")})
             _runner(store, body.offline).run({"task_card": task.model_dump(mode="json")}, RunnerOptions())
             return _project_view(store)
 
