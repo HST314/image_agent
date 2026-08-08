@@ -21,19 +21,28 @@ class ManualAction(BaseModel):
 
 
 class CalibrationLoop:
-    def __init__(self, store: ProjectStore, policy: SelfCheckPolicy, *, inspector: Callable[[str, str], dict[str, Any]], reworker: Callable[[dict[str, Any]], dict[str, Any]], presenter: Callable[[int, VisualCheckResult], None] | None = None) -> None:
+    def __init__(self, store: ProjectStore, policy: SelfCheckPolicy, *, inspector: Callable[[str, str], dict[str, Any]], reworker: Callable[[dict[str, Any]], dict[str, Any]], presenter: Callable[[int, VisualCheckResult], None] | None = None,
+                 rule_version: str = "visual-inspection-v2") -> None:
         self.store, self.policy, self.inspector, self.reworker, self.presenter = store, policy, inspector, reworker, presenter or (lambda _n, _r: None)
+        self.rule_version = rule_version
 
     def run(self, *, current_asset: dict[str, Any], stable_specification: str, constraints: list[str], approve: Callable[[VisualCheckResult], ManualAction] | None = None, start_round: int = 1) -> dict[str, Any]:
         current = current_asset
         limit = self.policy.fixed_rounds if self.policy.termination == "fix" else self.policy.max_rounds
+        if limit < 1:
+            raise ValueError("质检轮次上限必须至少为 1。")
         for number in range(start_round, limit + 1):
-            self.store.events.append("inspection_started", round=number, asset=current)
+            self.store.events.append("inspection_started", round=number, input_asset=current,
+                                     rule_version=self.rule_version, model_role="vision_language_model")
             inspection_key = self.store.idempotency_key("inspection", content_hash(current), content_hash(stable_specification), "vlm")
             cached = self._successful(inspection_key)
             raw = cached or self.inspector(str(current["uri"]), stable_specification)
             result = VisualCheckResult.model_validate(raw)
-            self.store.events.append("inspection_reused" if cached else "inspection_completed", round=number, result=result.model_dump(mode="json"), idempotency_key=inspection_key)
+            self.store.events.append("inspection_reused" if cached else "inspection_completed", round=number,
+                                     input_asset=current, checks=result.issues or [{"item": item, "passed": False} for item in result.deviations], score=result.confidence,
+                                     result=result.model_dump(mode="json"), rework_prompt=result.rework_prompt_delta,
+                                     rule_version=self.rule_version, model_version=result.model_name,
+                                     idempotency_key=inspection_key)
             self.presenter(number, result)
             checked_hash = str(current["sha256"])
             choice = ManualAction(action="execute")
@@ -74,16 +83,10 @@ class CalibrationLoop:
                         "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
             if result.decision == "pass":
                 # A passing asset is already the asset that was just inspected.
-                # Fixed-round mode may perform the remaining inspections, but
-                # must never mutate that asset merely to consume the budget.
-                if self.policy.termination == "solo" or self.policy.stop_early_on_pass or number >= limit:
-                    return {"waiting": False, "phase": "calibration_completed", "round": number, "asset": current,
-                            "inspection": result.model_dump(mode="json"), "calibration_status": "completed",
-                            "termination_satisfied": True, "termination_reason": "pass",
-                            "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
-                self.store.checkpoint("self_check_iteration", {"phase": "round_checkpointed", "round": number, "asset": current})
-                self.store.events.append("round_checkpointed", round=number, asset=current)
-                continue
+                return {"waiting": False, "phase": "calibration_completed", "round": number, "asset": current,
+                        "inspection": result.model_dump(mode="json"), "calibration_status": "completed",
+                        "termination_satisfied": True, "termination_reason": "pass",
+                        "latest_checked_asset_hash": checked_hash, "selected_policy": self.policy.__dict__}
             if number >= limit:
                 # One round is one actual VLM inspection. There is no budget to
                 # inspect a reworked asset after the final inspection, so retain
@@ -109,7 +112,8 @@ class CalibrationLoop:
                 assembled = ContextAssembler(ContextPolicy("image")).assemble(objective="按本轮质检意见修正画面", specification=stable_specification, constraints=constraints, current_input=str(current), feedback=delta, references=refs)
                 key = self.store.idempotency_key("self_check_rework", content_hash(current), content_hash(assembled["text"]), "image", current["sha256"])
                 current = self._successful(key) or self.reworker(assembled)
-                self.store.events.append("rework_completed", round=number, asset=current, references=assembled["references"], idempotency_key=key)
+                self.store.events.append("rework_completed", round=number, output_asset=current,
+                                         rework_prompt=delta, asset=current, references=assembled["references"], idempotency_key=key)
             self.store.checkpoint("self_check_iteration", {"phase": "round_checkpointed", "round": number, "asset": current})
             self.store.events.append("round_checkpointed", round=number, asset=current)
         raise RuntimeError("质检循环意外退出，未形成可审计的终止事实。")

@@ -43,6 +43,50 @@ def test_style_bound_identity_is_repaired_instead_of_accepted():
     assert result.style_index == "STYLE-001"
 
 
+@pytest.mark.parametrize("wrapped", [
+    "```json\n" + json.dumps(_style(), ensure_ascii=False) + "\n```",
+    "以下是结果：" + json.dumps(_style(), ensure_ascii=False) + "。结束",
+])
+def test_json_is_extracted_without_spending_repair(wrapped):
+    calls = []
+    result = validate_with_one_repair(output_kind="style_understanding", model=StyleUnderstandingOutput,
+        invoke=lambda prompt: calls.append(prompt) or wrapped, prompt="original",
+        schema=StyleUnderstandingOutput.model_json_schema())
+    assert result.style_index == "STYLE-001" and len(calls) == 1
+
+
+def test_repair_prompt_redacts_secret_and_cannot_change_valid_fields():
+    calls = []
+    first = _style(lighting="")
+    first["major_risk"] = "api_key=TOPSECRET"
+    repaired = _style(lighting="修复光影", title="偷偷改标题", major_risk="api_key=TOPSECRET")
+    with pytest.raises(RecoverableStructuredOutputError):
+        validate_with_one_repair(output_kind="style_understanding", model=StyleUnderstandingOutput,
+            invoke=lambda prompt: calls.append(prompt) or (first if len(calls) == 1 else repaired), prompt="original",
+            schema=StyleUnderstandingOutput.model_json_schema())
+    assert "TOPSECRET" not in calls[1] and '"title"' in calls[1]
+
+
+def test_missing_field_repair_cannot_change_another_valid_field():
+    calls = []
+    first = _style()
+    first.pop("lighting")
+    repaired = _style(lighting="修复光影", title="被篡改标题")
+
+    with pytest.raises(RecoverableStructuredOutputError) as caught:
+        validate_with_one_repair(
+            output_kind="style_understanding",
+            model=StyleUnderstandingOutput,
+            invoke=lambda prompt: calls.append(prompt) or (first if len(calls) == 1 else repaired),
+            prompt="original",
+            schema=StyleUnderstandingOutput.model_json_schema(),
+        )
+
+    assert len(calls) == 2
+    assert '"title": "标题"' in calls[1]
+    assert "repair 改变了已合法字段" in caught.value.validation_error
+
+
 def test_second_failure_is_recoverable_and_redacts_sensitive_raw():
     recorded = []
     responses = iter(["api_key=first-secret {", "Authorization: Bearer-second-secret {"])
@@ -61,14 +105,14 @@ def test_visual_inspection_never_defaults_to_pass_and_repairs_only_once():
     calls = []
     responses = iter([
         {"deviations": [], "rework_prompt_delta": ""},
-        {"passed": False, "decision": "continue", "deviations": ["偏差"], "rework_prompt_delta": "修正", "confidence": 0.7},
+        {"passed": True, "decision": "pass", "deviations": [], "rework_prompt_delta": "", "confidence": 0.7},
     ])
     result = validate_with_one_repair(
         output_kind="visual_inspection", model=VisualInspectionOutput,
         invoke=lambda prompt: calls.append(prompt) or next(responses), prompt="inspect",
         schema=VisualInspectionOutput.model_json_schema(),
     )
-    assert result.passed is False and result.decision == "continue" and len(calls) == 2
+    assert result.passed is True and result.decision == "pass" and len(calls) == 2
 
 
 def test_visual_pass_flag_and_decision_must_agree():
@@ -82,6 +126,14 @@ def test_visual_pass_flag_and_decision_must_agree():
         schema=VisualInspectionOutput.model_json_schema(),
     )
     assert result.decision == "pass"
+
+
+def test_visual_semantic_contradiction_is_rejected():
+    invalid = {"passed": True, "decision": "pass", "deviations": ["仍有偏差"],
+               "rework_prompt_delta": "继续改", "confidence": 0.9}
+    with pytest.raises(RecoverableStructuredOutputError):
+        validate_with_one_repair(output_kind="visual_inspection", model=VisualInspectionOutput,
+            invoke=lambda _: invalid, prompt="inspect", schema=VisualInspectionOutput.model_json_schema())
 
 
 def test_visual_second_failure_does_not_invoke_rework():

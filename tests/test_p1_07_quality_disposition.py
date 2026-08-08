@@ -86,7 +86,7 @@ def test_continue_generation_opens_fresh_budget_and_repeated_submit_does_not_rep
     paid = []
     runner._image_call = lambda *args, **kwargs: (paid.append((args, kwargs)), {"uri": "https://images.example/new-cycle.png", "provider": "ark", "model": "m"})[1]
     runner._inspect = lambda *_: {"passed": True, "decision": "pass", "deviations": [], "rework_prompt_delta": "", "confidence": .99}
-    options = RunnerOptions(quality_action="continue_generation", idempotency_key="continue-cycle-001", actor="operator")
+    options = RunnerOptions(quality_action="continue_generation", idempotency_key="continue-cycle-001", actor="operator", expense_confirmed=True)
     first = runner.run(store.resume(), options, only_state="self_check_iteration")
     second = runner.run(store.resume(), options, only_state="self_check_iteration")
     assert first["quality_cycle"] == 2 and first["round"] == 1
@@ -103,7 +103,7 @@ def test_concurrent_duplicate_disposition_is_serialized_and_paid_once(tmp_path: 
         {"uri": "https://images.example/concurrent.png", "provider": "ark", "model": "m"})[1]
     runner._inspect = lambda *_: {"passed": True, "decision": "pass", "deviations": [],
                                   "rework_prompt_delta": "", "confidence": .99}
-    options = RunnerOptions(quality_action="continue_generation", idempotency_key="concurrent-key-001", actor="operator")
+    options = RunnerOptions(quality_action="continue_generation", idempotency_key="concurrent-key-001", actor="operator", expense_confirmed=True)
     def submit(_):
         try:
             return runner.run(state, options, only_state="self_check_iteration")
@@ -128,3 +128,36 @@ def test_disposition_requires_limit_gate_actor_and_idempotency_key(tmp_path: Pat
     ]:
         with pytest.raises(ValueError):
             runner.run(state, options, only_state="self_check_iteration")
+
+
+def test_continue_generation_requires_explicit_expense_confirmation(tmp_path: Path):
+    store = ProjectStore(tmp_path, "expense-gate"); store.create()
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    paid = []
+    runner._image_call = lambda *args, **kwargs: paid.append(1)
+    with pytest.raises(ValueError, match="费用"):
+        runner.run(_runner_state(), RunnerOptions(quality_action="continue_generation",
+            idempotency_key="expense-1", actor="operator"), only_state="self_check_iteration")
+    assert paid == []
+
+
+def test_fixed_policy_stops_immediately_on_first_pass(tmp_path: Path):
+    store = ProjectStore(tmp_path, "fixed-pass"); store.create(); calls = []
+    result = CalibrationLoop(store, SelfCheckPolicy("fix", "auto", fixed_rounds=3, max_rounds=3,
+        stop_early_on_pass=False), inspector=lambda *_: calls.append(1) or {
+            "passed": True, "decision": "pass", "deviations": [], "rework_prompt_delta": "", "confidence": .9},
+        reworker=lambda _: pytest.fail("must not rework")).run(current_asset=_asset(),
+        stable_specification="spec", constraints=[])
+    assert result["round"] == 1 and len(calls) == 1
+
+
+def test_human_rework_paid_call_is_idempotent(tmp_path: Path):
+    store = ProjectStore(tmp_path, "human-idem"); store.create()
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    paid = []
+    runner._image_call = lambda *args, **kwargs: paid.append(kwargs["idempotency_key"]) or _asset("https://images.example/human.png")
+    state = {**_runner_state(), "state": "human_prompt_iteration", "phase": "waiting_human_rework"}
+    options = RunnerOptions(human_prompt="提高对比度", idempotency_key="human-1", actor="op")
+    first = runner.run(state, options, only_state="human_prompt_iteration")
+    second = runner.run(state, options, only_state="human_prompt_iteration")
+    assert first["asset"]["sha256"] == second["asset"]["sha256"] and len(paid) == 1

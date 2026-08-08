@@ -68,6 +68,7 @@ class AdvanceRequest(StrictRequest):
     final_action: Literal["confirm", "continue"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=256)
     quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
+    expense_confirmed: bool = False
     offline: bool = False
 
 
@@ -121,6 +122,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         clarification_answers=body.clarification_answers,
         quality_action=body.quality_action,
         idempotency_key=body.idempotency_key,
+        expense_confirmed=body.expense_confirmed,
     )
 
 

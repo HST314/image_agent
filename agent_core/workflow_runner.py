@@ -63,7 +63,8 @@ def build_style_candidate_prompt(
     )
 
 
-def validate_candidate_mechanisms(ideas: list[StyleIdeaCard], *, expected_count: int = 5) -> None:
+def validate_candidate_mechanisms(ideas: list[StyleIdeaCard], *, expected_count: int = 5,
+                                  min_differences: int = 3) -> None:
     """Reject incomplete or falsely duplicated five-direction batches before rendering."""
 
     if len(ideas) != expected_count:
@@ -71,14 +72,16 @@ def validate_candidate_mechanisms(ideas: list[StyleIdeaCard], *, expected_count:
     if len({idea.style_index for idea in ideas}) != expected_count:
         raise ValueError("候选 style_index 不唯一，禁止假装完成五种机制。")
     fields = ("composition", "material", "lighting", "narrative", "graphic_language")
-    signatures: set[tuple[str, ...]] = set()
+    signatures: list[tuple[str, ...]] = []
     for idea in ideas:
         signature = tuple(" ".join(str(getattr(idea, field)).split()).casefold() for field in fields)
         if any(not value for value in signature):
             raise ValueError(f"候选 {idea.style_index} 的机制说明不完整。")
-        if signature in signatures:
-            raise ValueError("候选的构图、材质、光影、叙事和图形语言机制重复，禁止生图。")
-        signatures.add(signature)
+        for previous in signatures:
+            differences = sum(left != right for left, right in zip(signature, previous))
+            if differences < min_differences:
+                raise ValueError(f"候选机制差异不足：五维中至少 {min_differences} 维必须不同，禁止生图。")
+        signatures.append(signature)
 
 
 def _task_hard_constraints(task_card: ImageTaskCard, spec: TaskSpecification) -> dict[str, Any]:
@@ -120,6 +123,7 @@ class RunnerOptions:
     clarification_answers: dict[str, Any] | None = None
     quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
     idempotency_key: str | None = None
+    expense_confirmed: bool = False
 
 
 class WorkflowRunner:
@@ -164,7 +168,7 @@ class WorkflowRunner:
                 return handler_for(product_state)
             except KeyError as exc:
                 raise ValueError(f"产品状态 {product_state!r} 没有可执行处理器。") from exc
-        if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection", "waiting_quality_disposition"}:
+        if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection", "waiting_quality_disposition", "waiting_candidate_retry"}:
             return str(snapshot.get("state"))
         if snapshot.get("phase") == "waiting_human_rework":
             return "human_prompt_iteration"
@@ -324,7 +328,8 @@ class WorkflowRunner:
         ).generate(
             task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=self.policy.candidate_count
         )
-        validate_candidate_mechanisms(idea_cards, expected_count=self.policy.candidate_count)
+        validate_candidate_mechanisms(idea_cards, expected_count=self.policy.candidate_count,
+                                      min_differences=self.policy.candidate_min_mechanism_differences)
 
         # 3. 终端输出这 5 张文本卡片给用户
         self.output("\n=================== 🎨 筛选出 5 种艺术风格方向 ===================")
@@ -359,7 +364,7 @@ class WorkflowRunner:
             slot_key = content_hash(["initial_candidate_generation", spec.content_hash, index, idea.style_index])
             result = self._image_call("initial_candidate_generation", prompt, [], index=index, idempotency_key=slot_key)
             card = style_by_index[idea.style_index]
-            style_audit.append({
+            audit = {
                 "slot": index,
                 "style_index": idea.style_index,
                 "style_entry_version": card.version,
@@ -369,8 +374,10 @@ class WorkflowRunner:
                 "prompt_sha256": content_hash(prompt),
                 "render_idempotency_key": slot_key,
                 "render_reference_count": 0,
-            })
-            return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
+            }
+            style_audit.append(audit)
+            return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}",
+                    "style_name": idea.title if idea else f"方向 {index + 1}", "style_slot_audit": audit}
 
         batch = CandidateBatchGenerator(self.store, render, attempts=self.policy.max_render_retries + 1,
                                         max_workers=self.policy.candidate_concurrency,
@@ -378,10 +385,23 @@ class WorkflowRunner:
                                         on_progress=lambda completed, total: self.progress(completed, total, "candidate")).generate(
                                             spec.content_hash, count=self.policy.candidate_count,
                                             slot_identities=slot_identities)
-        if batch["failed"]: 
-            raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
+        merged_audit = sorted(
+            [asset["style_slot_audit"] for asset in batch["succeeded"] if asset.get("style_slot_audit")],
+            key=lambda item: item["slot"],
+        )
+        if batch["failed"]:
+            failed_slots = [item["index"] for item in batch["failed"]]
+            return {"candidates": batch["succeeded"], "candidate_slots": {
+                        "succeeded": [item["candidate_index"] for item in batch["succeeded"]],
+                        "failed": failed_slots, "pending_retry": failed_slots},
+                    "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards],
+                    "style_scheme": "B", "style_slot_audit": merged_audit,
+                    "waiting": True, "completed": False, "phase": "waiting_candidate_retry",
+                    "skill_status": "degraded" if degraded_reasons else "ready",
+                    "skill_degradation_reasons": degraded_reasons}
         return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards],
-                "style_scheme": "B", "style_slot_audit": sorted(style_audit, key=lambda item: item["slot"]),
+                "candidate_slots": {"succeeded": list(range(self.policy.candidate_count)), "failed": [], "pending_retry": []},
+                "style_scheme": "B", "style_slot_audit": merged_audit,
                 "skill_status": "degraded" if degraded_reasons else "ready",
                 "skill_degradation_reasons": degraded_reasons}
 
@@ -406,11 +426,13 @@ class WorkflowRunner:
         spec = TaskSpecification.model_validate(data["task_specification"])
         policy_data = data.get("self_check_policy", self.policy.self_check.model_dump(mode="json"))
         policy_data = dict(policy_data)
+        policy_data.pop("rule_version", None)
         policy_data["max_rounds"] = min(int(policy_data.get("max_rounds", self.policy.self_check.max_rounds)),
                                         self.policy.max_calibration_retries + 1)
         loop = CalibrationLoop(self.store, SelfCheckPolicy(**policy_data), inspector=self._inspect,
             reworker=lambda assembled: self._image_call("self_check_rework", assembled["text"], [r["uri"] for r in assembled["references"]]),
-            presenter=lambda number, result: self._present_inspection(number, result))
+            presenter=lambda number, result: self._present_inspection(number, result),
+            rule_version=self.policy.self_check.rule_version)
         action = options.get("manual_action")
         result = loop.run(current_asset=data.get("asset") or data["master_asset"], stable_specification=specification_to_markdown(spec),
                           constraints=[], approve=(lambda _: action) if action else None,
@@ -440,6 +462,8 @@ class WorkflowRunner:
                       "completed": False, "calibration_status": "abandoned",
                       "termination_satisfied": False, "termination_reason": "human_abandoned"}
         elif action == "continue_generation":
+            if options.get("expense_confirmed") is not True:
+                raise ValueError("继续生成会产生新费用，必须由操作者明确确认费用影响。")
             current = data.get("current_asset") or data["asset"]
             prompt = str((data.get("inspection") or {}).get("rework_prompt_delta") or "按未通过项继续修正画面")
             call_key = self.store.idempotency_key("quality_continue_generation", key, content_hash(prompt),
@@ -447,12 +471,14 @@ class WorkflowRunner:
             generated = normalize_image_asset(self._image_call(
                 "self_check_rework", prompt, [str(current["uri"])], idempotency_key=call_key
             ))
+            common["quality_disposition"]["expense_confirmation"] = {"confirmed": True, "actor": actor}
             next_data = {**common, "asset": generated, "current_asset": generated, "round": 1,
                          "quality_cycle": int(data.get("quality_cycle", 1)) + 1, "phase": "round_checkpointed",
                          "waiting": False, "inspection": None, "failed_items": [],
                          "latest_checked_asset_hash": None, "calibration_status": "in_progress"}
             result = self._self_check(next_data, {**options, "quality_action": None})
             result["quality_cycle"] = next_data["quality_cycle"]
+            result["cumulative_rounds"] = int(data.get("cumulative_rounds", data.get("round", 0))) + int(result.get("round", 0))
         else:
             raise ValueError("未知人工分流动作。")
         self.store.events.append("quality_disposition_recorded", action=action, actor=actor,
@@ -462,13 +488,25 @@ class WorkflowRunner:
     def _human_rework(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         prompt = options.get("human_prompt")
         if not prompt: return {"asset": data.get("current_asset") or data.get("asset"), "waiting": False}
+        key = str(options.get("idempotency_key") or "").strip()
+        if not key:
+            raise ValueError("人工微调付费调用必须提供 idempotency_key。")
+        for event in reversed(self.store.history()):
+            if event.get("type") == "human_rework_completed" and event.get("idempotency_key") == key:
+                if event.get("prompt_sha256") != content_hash(prompt):
+                    raise ValueError("同一幂等键不能用于不同人工微调 Prompt。")
+                return dict(event["result"])
         current = data.get("current_asset") or data["asset"]
-        result = self._image_call("human_prompt_rework", prompt, [str(current["uri"])])
+        call_key = self.store.idempotency_key("human_prompt_rework", key, content_hash(prompt), current["sha256"])
+        result = self._image_call("human_prompt_rework", prompt, [str(current["uri"])], idempotency_key=call_key)
         asset = normalize_image_asset(result)
         self.store.events.append("calibration_invalidated", reason="human_rework", previous_checked_asset_hash=data.get("latest_checked_asset_hash"), new_asset_hash=asset["sha256"])
-        return {"asset": asset, "current_asset": asset, "waiting": True, "phase": "waiting_reinspection", "calibration_status": "invalidated",
+        outcome = {"asset": asset, "current_asset": asset, "waiting": True, "phase": "waiting_reinspection", "calibration_status": "invalidated",
                 "termination_satisfied": False, "termination_reason": "asset_changed_after_human_rework",
                 "latest_checked_asset_hash": None, "inspection": None}
+        self.store.events.append("human_rework_completed", idempotency_key=key, provider_idempotency_key=call_key,
+                                 prompt_sha256=content_hash(prompt), result=outcome)
+        return outcome
 
     def _present_inspection(self, number: int, result: VisualCheckResult) -> None:
         self.store.events.append("inspection_presented", round=number, result=result.model_dump(mode="json"))
@@ -539,7 +577,9 @@ class WorkflowRunner:
     def _record_structured_output_failure(self, error: RecoverableStructuredOutputError) -> None:
         self.store.events.append(
             "structured_output_recovery_required", output_kind=error.output_kind,
-            validation_error=error.validation_error, raw_output=error.redacted_output, retryable=True,
+            validation_error=error.validation_error, error_paths=error.error_paths,
+            recovery_id=error.recovery_id, attempts=["initial", "repair"],
+            raw_output=error.redacted_output, retryable=True,
         )
 
     def _vlm(self, route: ModelRoute):

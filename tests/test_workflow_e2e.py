@@ -229,7 +229,8 @@ def test_human_rework_invalidates_old_inspection_and_forces_recheck(tmp_path: Pa
     data = {"state":"self_check_iteration", "asset":old, "current_asset":old,
             "calibration_status":"completed", "termination_satisfied":True, "termination_reason":"pass",
             "latest_checked_asset_hash":old["sha256"], "selected_policy":{"termination":"solo","release":"auto"}}
-    changed = runner.run(data, RunnerOptions(human_prompt="改颜色"), only_state="human_prompt_iteration")
+    changed = runner.run(data, RunnerOptions(human_prompt="改颜色", idempotency_key="rework-color-1"),
+                         only_state="human_prompt_iteration")
     assert changed["waiting"] and changed["phase"] == "waiting_reinspection"
     assert not changed["termination_satisfied"] and changed["latest_checked_asset_hash"] is None
 
