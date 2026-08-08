@@ -17,6 +17,7 @@ REQUIRED_STATE_ROLES: dict[str, ModelRole] = {
     "confirmation_build": ModelRole.REASONING_LLM,
     "initial_candidate_generation": ModelRole.TEXT_TO_IMAGE_MODEL,
     "self_check_inspection": ModelRole.VISION_LANGUAGE_MODEL,
+    "style_reference_interpretation": ModelRole.VISION_LANGUAGE_MODEL,
     "self_check_rework": ModelRole.TEXT_TO_IMAGE_MODEL,
     "human_prompt_rework": ModelRole.TEXT_TO_IMAGE_MODEL,
 }

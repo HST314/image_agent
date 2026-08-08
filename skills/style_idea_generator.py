@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import json
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Any
 
-from agent_core.models import ImageTaskCard, StyleCard, StyleIdeaCard, TaskConfirmationDoc
+from agent_core.models import ImageTaskCard, StyleCard, StyleIdeaCard, StyleUnderstandingOutput, TaskConfirmationDoc
+from agent_core.structured_output import RecoverableStructuredOutputError, validate_with_one_repair
 from model_router.clients import VisionLanguageModelClient
 
 
 class StyleIdeaGenerator:
     """Create human-readable style direction cards before image rendering."""
 
-    def __init__(self, client: VisionLanguageModelClient | None = None, model_name: str | None = None, *, offline_mode: bool = False) -> None:
+    def __init__(self, client: VisionLanguageModelClient | None = None, model_name: str | None = None, *, offline_mode: bool = False,
+                 reference_root: Path | None = None,
+                 failure_recorder: Any | None = None) -> None:
         self.client = client
         self.offline_mode = offline_mode
         self.model_name = model_name or ("offline_style_builder" if offline_mode else "style_vlm")
+        self.reference_root = (reference_root or Path(__file__).parent / "style_cards").resolve()
+        self.failure_recorder = failure_recorder
 
     def generate(
         self,
@@ -54,11 +62,24 @@ class StyleIdeaGenerator:
 
         reference_asset = style_card.reference_image.path
         if self.client is not None and reference_asset:
+            image = self._reference_data_uri(style_card)
             try:
-                payload = self.client.inspect(reference_asset, self._prompt(task_card, confirmation_doc, style_card))
-                return self._from_payload(task_card, style_card, reference_asset, payload)
-            except (KeyError, TypeError, ValueError) as exc:
-                raise RuntimeError("风格模型输出不符合契约。") from exc
+                parsed = validate_with_one_repair(
+                    output_kind="style_understanding",
+                    model=StyleUnderstandingOutput,
+                    invoke=lambda prompt: self.client.inspect(image, prompt),
+                    prompt=self._prompt(task_card, confirmation_doc, style_card),
+                    schema=StyleUnderstandingOutput.model_json_schema(),
+                    expected_values={"style_index": style_card.style_index},
+                    on_failure=self.failure_recorder,
+                )
+                return self._from_payload(task_card, style_card, reference_asset, parsed.model_dump())
+            except RecoverableStructuredOutputError:
+                raise
+            except Exception as exc:
+                raise RuntimeError(
+                    f"风格 VLM 调用、style_index 绑定或固定结构输出失败（{style_card.style_index}）。"
+                ) from exc
         if not self.offline_mode:
             raise RuntimeError("未配置风格模型；只有显式离线模式允许规则化风格卡。")
         return self._offline_card(task_card, style_card, reference_asset)
@@ -72,18 +93,25 @@ class StyleIdeaGenerator:
     ) -> StyleIdeaCard:
         """Validate a model payload into a style idea card."""
 
+        if payload.get("style_index") != style_card.style_index:
+            raise ValueError("VLM style_index 与受控目录绑定不一致。")
         return StyleIdeaCard(
             task_id=task_card.task_id,
             source_style_id=style_card.style_id,
             style_index=style_card.style_index,
-            title=str(payload["title"]),
-            composition=str(payload["composition"]),
-            material=str(payload["material"]),
-            fit_reason=str(payload["fit_reason"]),
-            artistic_philosophy=str(payload["artistic_philosophy"]),
-            adaptable_mechanism=str(payload["adaptable_mechanism"]),
-            major_risk=str(payload["major_risk"]),
-            prompt_supplement=str(payload["prompt_supplement"]),
+            style_summary=payload["style_summary"],
+            title=payload["title"],
+            composition=payload["composition"],
+            material=payload["material"],
+            lighting=payload["lighting"],
+            narrative=payload["narrative"],
+            graphic_language=payload["graphic_language"],
+            fit_reason=payload["fit_reason"],
+            artistic_philosophy=payload["artistic_philosophy"],
+            adaptable_mechanism=payload["adaptable_mechanism"],
+            prohibited_copy_elements=payload["prohibited_copy_elements"],
+            major_risk=payload["major_risk"],
+            prompt_supplement=payload["prompt_supplement"],
             reference_asset=reference_asset,
             generated_by=self.model_name,
         )
@@ -102,12 +130,17 @@ class StyleIdeaGenerator:
             task_id=task_card.task_id,
             source_style_id=style_card.style_id,
             style_index=style_card.style_index,
+            style_summary=style_card.summary,
             title=style_card.style_name or style_card.style_id,
             composition=style_card.composition,
             material=material,
+            lighting=style_card.visual_language.lighting or "均匀柔和照明",
+            narrative=f"以{style_card.composition}组织从主信息到辅助信息的阅读叙事。",
+            graphic_language=style_card.visual_language.scheme or material,
             fit_reason=f"{style_card.summary}；适用于任务目标与使用场景；目录标注适用范围为：{'、'.join(style_card.best_for)}。",
             artistic_philosophy=f"以“{style_card.style_name}”建立信息秩序，在表达效率与视觉辨识度之间保持平衡。",
             adaptable_mechanism=f"借鉴{style_card.composition}，以及{material}；不复制参考图的具体主体或独特表达。",
+            prohibited_copy_elements=["参考图主体", "参考图构图", "参考图文字", "参考图标识", "参考图独特表达"],
             major_risk=risk,
             prompt_supplement=(
                 f"构图方向：{style_card.composition}\n"
@@ -127,12 +160,23 @@ class StyleIdeaGenerator:
         """Build a JSON-only VLM prompt for interpreting a style reference."""
 
         return (
-            "请阅读参考图并为通用图片生成流程输出一个中文风格理念卡。"
+            "请阅读且仅分析这张受控风格参考图，为通用图片生成流程输出一个中文风格理念卡。"
             "不得加入任务卡和确认书以外的具体业务事实。只返回 JSON："
-            '{"title":"string","composition":"string","material":"string",'
+            '{"style_index":"string","style_summary":"string","title":"string","composition":"string","material":"string",'
+            '"lighting":"string","narrative":"string","graphic_language":"string",'
             '"fit_reason":"string","artistic_philosophy":"string","adaptable_mechanism":"string",'
-            '"major_risk":"string","prompt_supplement":"string"}\n'
+            '"prohibited_copy_elements":["string"],"major_risk":"string","prompt_supplement":"string"}\n'
+            f"绑定身份：{json.dumps({'style_id': style_card.style_id, 'style_index': style_card.style_index}, ensure_ascii=False)}\n"
+            "禁止复刻的具体元素必须覆盖参考图主体、构图、文字、标识和独特表达。\n"
             f"任务卡：{json.dumps(task_card.model_dump(mode='json'), ensure_ascii=False)}\n"
             f"确认书：{json.dumps(confirmation_doc.model_dump(mode='json'), ensure_ascii=False)}\n"
             f"风格卡：{json.dumps(style_card.model_dump(mode='json'), ensure_ascii=False)}"
         )
+
+    def _reference_data_uri(self, style_card: StyleCard) -> str:
+        path = (self.reference_root / style_card.reference_image.path).resolve()
+        if not path.is_relative_to(self.reference_root):
+            raise ValueError("受控风格参考图路径越界。")
+        payload = path.read_bytes()
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return f"data:{media_type};base64,{base64.b64encode(payload).decode('ascii')}"

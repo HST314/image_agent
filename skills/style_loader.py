@@ -33,7 +33,7 @@ class StyleCardLoader:
         cards: list[tuple[int, StyleCard]] = []
         seen_indexes: set[str] = set()
         for item in self.index.get("items", []):
-            card_path = (self.base_dir / str(item["path"])).resolve()
+            card_path = self._version_path(item, str(item.get("version") or ""))
             if card_path.parent != self.base_dir.resolve():
                 raise ValueError("Style card path escapes the indexed Skill directory.")
             card = load_style_card(card_path)
@@ -53,6 +53,32 @@ class StyleCardLoader:
             if card.status is SkillStatus.APPROVED:
                 cards.append((int(item.get("priority", 1000)), card))
         return cards
+
+    def _version_path(self, item: dict[str, object], version: str) -> Path:
+        versions = item.get("versions")
+        if versions:
+            if not isinstance(versions, dict):
+                raise ValueError("Style index versions must be a mapping.")
+            selected = version or str(item.get("version") or "")
+            if selected not in versions:
+                raise LookupError(f"Style version is not indexed: {item.get('style_index')}@{selected}")
+            relative = str(versions[selected])
+        else:
+            relative = str(item["path"])
+        card_path = (self.base_dir / relative).resolve()
+        if self.base_dir.resolve() not in card_path.parents:
+            raise ValueError("Style card path escapes the indexed Skill directory.")
+        return card_path
+
+    def load_version(self, style_index: str, version: str) -> StyleCard:
+        """Resolve the immutable catalog entry recorded by a historical project."""
+        matches = [item for item in self.index.get("items", []) if item.get("style_index") == style_index]
+        if len(matches) != 1:
+            raise LookupError(f"Style index is missing or ambiguous: {style_index}")
+        card = load_style_card(self._version_path(matches[0], version))
+        if card.style_index != style_index or card.version != version:
+            raise ValueError(f"Style history identity mismatch for {style_index}@{version}.")
+        return card
 
     def select_distinct(self, count: int = 5, *, task_text: str = "") -> list[StyleCard]:
         """Return relevant approved style cards in deterministic rank order.

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StyleUnderstandingOutput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["style_index", "style_summary", "title", "composition", "material", "lighting", "narrative", "graphic_language", "fit_reason", "artistic_philosophy", "adaptable_mechanism", "prohibited_copy_elements", "major_risk", "prompt_supplement"],
+  "properties": {
+    "style_index": {"type": "string", "minLength": 1},
+    "style_summary": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "composition": {"type": "string", "minLength": 1},
+    "material": {"type": "string", "minLength": 1},
+    "lighting": {"type": "string", "minLength": 1},
+    "narrative": {"type": "string", "minLength": 1},
+    "graphic_language": {"type": "string", "minLength": 1},
+    "fit_reason": {"type": "string", "minLength": 1},
+    "artistic_philosophy": {"type": "string", "minLength": 1},
+    "adaptable_mechanism": {"type": "string", "minLength": 1},
+    "prohibited_copy_elements": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "major_risk": {"type": "string", "minLength": 1},
+    "prompt_supplement": {"type": "string", "minLength": 1}
+  }
+}

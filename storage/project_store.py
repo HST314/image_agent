@@ -15,6 +15,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 FORMAT_VERSION = 1
+CHECKPOINT_ENVELOPE_VERSION = 2
 
 
 def _now() -> str:
@@ -51,6 +52,10 @@ class ProjectExistsError(FileExistsError):
 
 class ImmutableRecordError(FileExistsError):
     pass
+
+
+class LegacyCheckpointReadOnlyError(ValueError):
+    """A legacy checkpoint is intact but cannot safely drive execution."""
 
 
 class EventStore:
@@ -191,8 +196,17 @@ class CheckpointStore:
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def save(self, branch: str, sequence: int, state: str, data: dict[str, Any]) -> tuple[str, str]:
-        envelope = {"format_version": FORMAT_VERSION, "branch": branch, "sequence": sequence, "state": state, "data": data}
+    def save(self, branch: str, sequence: int, state: str, data: dict[str, Any],
+             *, execution_cursor: dict[str, Any] | None = None) -> tuple[str, str]:
+        if execution_cursor is None:
+            from agent_core.workflow import project_execution_cursor
+            execution_cursor = project_execution_cursor(state, data)
+        if execution_cursor is None:
+            raise LegacyCheckpointReadOnlyError(f"状态 {state!r} 无法映射到版本化执行游标；仅允许审计读取。")
+        envelope = {"format_version": FORMAT_VERSION, "checkpoint_envelope_version": CHECKPOINT_ENVELOPE_VERSION,
+                    "branch": branch, "sequence": sequence, "state": state,
+                    "execution_cursor": execution_cursor,
+                    "compatibility_projection": {"state": state, "phase": data.get("phase")}, "data": data}
         envelope["checksum"] = content_hash(envelope)
         relative = f"checkpoints/{branch}/{sequence:06d}-{state}.json"
         path = self.root / relative
@@ -206,12 +220,24 @@ class CheckpointStore:
         checksum = envelope.pop("checksum", None)
         if envelope.get("format_version") != FORMAT_VERSION or checksum != content_hash(envelope):
             raise CorruptProjectError("检查点版本或完整性校验失败。")
+        version = envelope.get("checkpoint_envelope_version")
+        if version is None:
+            from agent_core.workflow import project_execution_cursor
+            cursor = project_execution_cursor(str(envelope.get("state") or ""), envelope.get("data") or {})
+            envelope["checkpoint_envelope_version"] = 1
+            envelope["execution_cursor"] = cursor
+            envelope["legacy_read_only"] = cursor is None
+        elif version != CHECKPOINT_ENVELOPE_VERSION:
+            raise CorruptProjectError("检查点 envelope 版本不受支持。")
         envelope["checksum"] = checksum
         return envelope
 
 
 class ProjectStore:
     """Own project manifest, branches, prompts, events, artifacts and checkpoints."""
+
+    _checkpoint_guards: dict[str, threading.RLock] = {}
+    _checkpoint_guards_guard = threading.Lock()
 
     def __init__(self, projects_root: str | Path, project_id: str) -> None:
         self.root = Path(projects_root) / project_id
@@ -346,25 +372,93 @@ class ProjectStore:
             raise ValueError(f"工程运行模式已固化为 {configured}，不能切换为 {mode}。")
 
     def manifest(self) -> dict[str, Any]:
-        data = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+            data = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
         if data.get("format_version") != FORMAT_VERSION:
             raise CorruptProjectError("工程版本不受支持。")
         return data
+
+    def _recover_checkpoint_commit(self) -> None:
+        """Finish an interrupted checkpoint/event/manifest commit from its WAL."""
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+
+    def _recover_checkpoint_commit_locked(self) -> None:
+        pending_path = self.root / "runtime/checkpoint-commit.json"
+        if not pending_path.exists():
+            return
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        pointer = pending["pointer"]
+        checkpoint_path = self.root / pointer["path"]
+        if not checkpoint_path.exists():
+            # Intent was durable but the immutable record was never installed;
+            # no event/manifest may point at it, so rollback is safe.
+            pending_path.unlink()
+            return
+        # The immutable checkpoint must exist and validate before it can become visible.
+        envelope = self.checkpoints.load(pointer["path"])
+        if envelope["checksum"] != pointer["checksum"]:
+            raise CorruptProjectError("待恢复检查点哈希不一致。")
+        transaction_id = pending["transaction_id"]
+        if not any(event.get("transaction_id") == transaction_id for event in self.events.read_all()):
+            self.events.append("step_succeeded", branch=pointer["branch"], state=pointer["state"],
+                               checkpoint=pointer["path"], transaction_id=transaction_id)
+        manifest_path = self.root / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        current = manifest.get("current_checkpoint") or {}
+        if current.get("branch") != pointer["branch"] or int(current.get("sequence", 0)) < int(pointer["sequence"]):
+            manifest.update(current_branch=pointer["branch"], current_checkpoint=pointer,
+                            failed_step=None, updated_at=pending["updated_at"])
+            atomic_json(manifest_path, manifest)
+        pending_path.unlink()
 
     def checkpoint_context(self, state: str, context: Any, *, branch: str | None = None) -> str:
         return self.checkpoint(state, context.dump_snapshot(), branch=branch)
 
     def checkpoint(self, state: str, data: dict[str, Any], *, branch: str | None = None) -> str:
-        manifest = self.manifest()
-        active = branch or manifest["current_branch"]
-        previous = manifest.get("current_checkpoint")
-        sequence = 1 if not previous or previous.get("branch") != active else int(previous["sequence"]) + 1
-        relative, checksum = self.checkpoints.save(active, sequence, state, data)
-        pointer = {"path": relative, "checksum": checksum, "branch": active, "sequence": sequence, "state": state}
-        manifest.update(current_branch=active, current_checkpoint=pointer, failed_step=None, updated_at=_now())
-        atomic_json(self.root / "manifest.json", manifest)
-        self.events.append("step_succeeded", branch=active, state=state, checkpoint=relative)
-        return relative
+        with self._checkpoint_transaction():
+            self._recover_checkpoint_commit_locked()
+            manifest = json.loads((self.root / "manifest.json").read_text(encoding="utf-8"))
+            active = branch or manifest["current_branch"]
+            previous = manifest.get("current_checkpoint")
+            sequence = 1 if not previous or previous.get("branch") != active else int(previous["sequence"]) + 1
+            relative = f"checkpoints/{active}/{sequence:06d}-{state}.json"
+            transaction_id = uuid4().hex
+            pending_path = self.root / "runtime/checkpoint-commit.json"
+            from agent_core.workflow import project_execution_cursor
+            cursor = project_execution_cursor(state, data)
+            if cursor is None:
+                raise LegacyCheckpointReadOnlyError(f"状态 {state!r} 无法映射到版本化执行游标；拒绝写入。")
+            expected = {"format_version": FORMAT_VERSION, "checkpoint_envelope_version": CHECKPOINT_ENVELOPE_VERSION,
+                        "branch": active, "sequence": sequence, "state": state,
+                        "execution_cursor": cursor,
+                        "compatibility_projection": {"state": state, "phase": data.get("phase")}, "data": data}
+            checksum = content_hash(expected)
+            pointer = {"path": relative, "checksum": checksum, "branch": active, "sequence": sequence, "state": state}
+            updated_at = _now()
+            atomic_json(pending_path, {"format_version": FORMAT_VERSION, "transaction_id": transaction_id,
+                                       "pointer": pointer, "updated_at": updated_at})
+            self.checkpoints.save(active, sequence, state, data, execution_cursor=cursor)
+            self._recover_checkpoint_commit_locked()
+            return relative
+
+    @contextmanager
+    def _checkpoint_transaction(self) -> Iterator[None]:
+        """Serialize WAL recovery and commit across store instances/processes."""
+        key = str(self.root.resolve())
+        with self._checkpoint_guards_guard:
+            guard = self._checkpoint_guards.setdefault(key, threading.RLock())
+        with guard:
+            lock_path = self.root / "runtime/checkpoint-commit.lock"
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     def start_step(self, state: str, **details: Any) -> None:
         self.events.append("step_started", branch=self.manifest()["current_branch"], state=state, **details)
@@ -378,7 +472,19 @@ class ProjectStore:
 
     def resume(self) -> dict[str, Any] | None:
         pointer = self.manifest().get("current_checkpoint")
-        return self.checkpoints.load(pointer["path"])["data"] if pointer else None
+        if not pointer:
+            return None
+        checkpoint = self.checkpoints.load(pointer["path"])
+        if checkpoint.get("legacy_read_only"):
+            raise LegacyCheckpointReadOnlyError("旧 checkpoint 状态不可安全映射；工程仅允许 inspect/history，禁止 resume/retry/branch。")
+        return checkpoint["data"]
+
+    def execution_cursor(self) -> dict[str, Any] | None:
+        """Return the canonical cursor without leaking it into legacy snapshot data."""
+        pointer = self.manifest().get("current_checkpoint")
+        if not pointer:
+            return None
+        return self.checkpoints.load(pointer["path"]).get("execution_cursor")
 
     def retry(self, execute: Any, *, name: str | None = None) -> Any:
         manifest = self.manifest()
@@ -394,6 +500,8 @@ class ProjectStore:
 
     def branch_from(self, checkpoint: str, *, name: str | None = None) -> str:
         source = self.checkpoints.load(checkpoint)
+        if source.get("legacy_read_only"):
+            raise LegacyCheckpointReadOnlyError("旧 checkpoint 状态不可安全映射；禁止从只读记录创建执行分支。")
         branches_path = self.root / "branches.json"
         branches = json.loads(branches_path.read_text(encoding="utf-8"))
         branch = name or f"branch-{uuid4().hex[:8]}"

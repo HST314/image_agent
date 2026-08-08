@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from agent_core.models import StateBinding
+from agent_core.structured_output import ModelOutputParseError
 from model_router.router import PROVIDER_KEY_ENV
 
 
@@ -142,20 +143,13 @@ class OpenAICompatibleVisionLanguageClient:
         content = response.choices[0].message.content
         if not content:
             raise RuntimeError("Vision language model returned an empty response.")
-        payload = json.loads(_extract_json_object(content))
+        try:
+            payload = json.loads(_extract_json_object(content))
+        except ValueError as exc:
+            raise ModelOutputParseError(content, exc) from exc
         if not isinstance(payload, dict):
             raise RuntimeError("视觉语言模型响应必须是 JSON 对象。")
             
-        # 保底容错归一化
-        if "passed" in payload and "decision" not in payload:
-            payload["decision"] = "pass" if payload["passed"] else "continue"
-        if "confidence" not in payload:
-            payload["confidence"] = 0.9
-        else:
-            try:
-                payload["confidence"] = float(payload["confidence"])
-            except Exception:
-                payload["confidence"] = 0.9
         return payload
 
 

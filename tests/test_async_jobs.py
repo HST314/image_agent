@@ -50,6 +50,36 @@ def test_async_job_schema_accepts_persisted_status(tmp_path: Path) -> None:
     jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(job)
 
 
+def test_job_persists_heartbeat_progress_and_cancel_requested(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "observable-job")
+    store.create()
+    jobs = JobStore(store.root)
+    job, _ = jobs.create("observable-key", {"options": {}, "mode": "offline"})
+    assert job["progress"] == {"completed": 0, "total": 1, "unit": "workflow"}
+    assert job["heartbeat_at"] is None
+    jobs.claim(job["job_id"])
+    running = jobs.heartbeat(job["job_id"], completed=2, total=5, unit="candidate")
+    assert running["progress"] == {"completed": 2, "total": 5, "unit": "candidate"}
+    assert running["heartbeat_at"]
+    cancelling = jobs.cancel(job["job_id"])
+    assert cancelling["status"] == "cancel_requested"
+    assert jobs.finish(job["job_id"])["status"] == "cancelled"
+
+
+def test_legacy_job_is_migrated_under_lock(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "legacy-job")
+    store.create()
+    path = store.root / "runtime/jobs.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "jobs": {"old": {
+        "job_id": "old", "idempotency_key": "legacy-key", "payload_hash": "hash",
+        "payload": {}, "status": "queued", "created_at": "then", "updated_at": "then"
+    }}}), encoding="utf-8")
+    migrated = JobStore(store.root).get("old")
+    assert migrated["progress"] == {"completed": 0, "total": 1, "unit": "workflow"}
+    assert migrated["heartbeat_at"] is None and migrated["attempt"] == 0
+
+
 def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "slots")
     store.create()
@@ -71,3 +101,23 @@ def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_pa
     keys = [event["idempotency_key"] for event in store.history()
             if event["type"] in {"candidate_failed", "candidate_succeeded"} and event["index"] == 2]
     assert len(set(keys)) == 1
+
+
+def test_running_cancel_stops_supplier_calls_that_have_not_started(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "cancel-slots"); store.create()
+    calls: list[int] = []
+    cancelled = False
+
+    def render(index: int):
+        nonlocal cancelled
+        calls.append(index)
+        cancelled = True
+        return {"uri": str(index), "sha256": str(index), "candidate_index": index}
+
+    result = CandidateBatchGenerator(
+        store, render, attempts=2, max_workers=1, should_cancel=lambda: cancelled
+    ).generate("confirmed-spec", count=5)
+    assert calls == [0]
+    assert len(result["succeeded"]) == 1
+    assert [failure["index"] for failure in result["failed"]] == [1, 2, 3, 4]
+    assert all(failure["cancelled"] for failure in result["failed"])

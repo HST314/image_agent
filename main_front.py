@@ -67,6 +67,7 @@ class AdvanceRequest(StrictRequest):
     task_spec_action: Literal["confirm"] | None = None
     final_action: Literal["confirm", "continue"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=256)
+    quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
     offline: bool = False
 
 
@@ -118,6 +119,8 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         final_action=body.final_action,
         actor=body.actor,
         clarification_answers=body.clarification_answers,
+        quality_action=body.quality_action,
+        idempotency_key=body.idempotency_key,
     )
 
 
@@ -129,6 +132,7 @@ def _project_view(store: ProjectStore) -> dict[str, Any]:
         "manifest": manifest,
         "snapshot": snapshot,
         "history": store.history(),
+        "execution_cursor": store.execution_cursor(),
         "business_status": _business_status(snapshot),
         "capabilities": _capabilities(manifest, snapshot),
     }
@@ -141,6 +145,7 @@ def _business_status(snapshot: dict[str, Any]) -> str:
         "waiting_task_spec_confirmation": "waiting_task_spec_confirmation",
         "waiting_master_selection": "waiting_master_selection",
         "waiting_human_approval": "waiting_quality_decision",
+        "waiting_quality_disposition": "waiting_quality_disposition",
         "waiting_human_rework": "waiting_human_rework",
         "waiting_reinspection": "waiting_reinspection",
         "waiting_final_confirmation": "waiting_final_confirmation",
@@ -166,12 +171,21 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
     store = _store(project_id)
     store.events.append("job_started", job_id=job["job_id"], attempt=job["attempt"])
     try:
+        jobs.heartbeat(job["job_id"], completed=0, total=1, unit="workflow")
         payload = job["payload"]
         body = AdvanceRequest.model_validate(payload["options"])
         snapshot = store.resume()
         if snapshot is None:
             raise ValueError("工程还没有可恢复节点。")
-        _runner(store, payload["mode"] == "offline").run(snapshot, _options(body))
+        runner = _runner(store, payload["mode"] == "offline")
+        runner.should_cancel = lambda: jobs.cancellation_requested(job["job_id"])
+        runner.progress = lambda completed, total, unit: jobs.heartbeat(
+            job["job_id"], completed=completed, total=total, unit=unit
+        )
+        runner.run(snapshot, _options(body))
+        if not jobs.cancellation_requested(job["job_id"]):
+            current = jobs.get(job["job_id"])["progress"]
+            jobs.heartbeat(job["job_id"], completed=current["total"], total=current["total"], unit=current["unit"])
         finished = jobs.finish(job["job_id"])
         store.events.append("job_finished", job_id=job["job_id"], status=finished["status"])
     except Exception as exc:
@@ -189,26 +203,18 @@ def _recover_jobs(project_id: str) -> None:
 
 
 def _capabilities(manifest: dict[str, Any], snapshot: dict[str, Any]) -> list[str]:
-    """仅把生产快照已有等待原因映射为 UI 动作，不执行或替代状态迁移。"""
+    """Project canonical state actions into the legacy HTTP view."""
     if manifest.get("failed_step"):
         return ["retry"]
     if snapshot.get("completed"):
         return ["inspect", "branch"]
-    phase = snapshot.get("phase")
-    if phase == "waiting_clarification":
-        return ["answer_clarification"]
-    if phase == "waiting_master_selection":
-        return ["select_master"]
-    if phase == "waiting_task_spec_confirmation":
-        return ["edit_task_spec", "confirm_task_spec"]
-    if phase == "waiting_final_confirmation":
-        return ["confirm_final", "continue_modifying"]
-    if phase == "waiting_human_rework":
-        return ["human_rework", "branch"]
-    if phase == "waiting_human_approval":
-        return ["review_calibration"]
-    if phase == "waiting_reinspection":
-        return ["resume"]
+    from agent_core.workflow import allowed_actions, project_execution_cursor
+    cursor = project_execution_cursor(str(snapshot.get("state") or ""), snapshot)
+    if cursor:
+        actions = list(allowed_actions(str(cursor["product_state"])))
+        if cursor["product_state"] == "human_rework":
+            actions.append("branch")
+        return actions
     if snapshot:
         return ["resume", "branch"]
     return []

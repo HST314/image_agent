@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def new_id(prefix: str) -> str:
@@ -309,17 +309,41 @@ class StyleIdeaCard(StrictBaseModel):
     task_id: str
     source_style_id: str
     style_index: str
-    title: str
-    composition: str
-    material: str
-    fit_reason: str
-    artistic_philosophy: str
-    adaptable_mechanism: str
-    major_risk: str
-    prompt_supplement: str
+    style_summary: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    composition: str = Field(min_length=1)
+    material: str = Field(min_length=1)
+    lighting: str = Field(min_length=1)
+    narrative: str = Field(min_length=1)
+    graphic_language: str = Field(min_length=1)
+    fit_reason: str = Field(min_length=1)
+    artistic_philosophy: str = Field(min_length=1)
+    adaptable_mechanism: str = Field(min_length=1)
+    prohibited_copy_elements: list[str] = Field(min_length=1)
+    major_risk: str = Field(min_length=1)
+    prompt_supplement: str = Field(min_length=1)
     reference_asset: str | None = None
     generated_by: str = "mock_style_vlm"
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class StyleUnderstandingOutput(StrictBaseModel):
+    """Strict provider output before trusted task metadata is attached."""
+
+    style_index: str = Field(min_length=1)
+    style_summary: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    composition: str = Field(min_length=1)
+    material: str = Field(min_length=1)
+    lighting: str = Field(min_length=1)
+    narrative: str = Field(min_length=1)
+    graphic_language: str = Field(min_length=1)
+    fit_reason: str = Field(min_length=1)
+    artistic_philosophy: str = Field(min_length=1)
+    adaptable_mechanism: str = Field(min_length=1)
+    prohibited_copy_elements: list[str] = Field(min_length=1)
+    major_risk: str = Field(min_length=1)
+    prompt_supplement: str = Field(min_length=1)
 
 
 class AppliesWhen(StrictBaseModel):
@@ -508,6 +532,22 @@ class VisualCheckResult(StrictBaseModel):
     preserve: list[str] = Field(default_factory=list)
     stop_reason: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class VisualInspectionOutput(StrictBaseModel):
+    """Strict visual-inspection provider response; no pass defaults are allowed."""
+
+    passed: bool
+    decision: Literal["continue", "pass", "blocked"]
+    deviations: list[str]
+    rework_prompt_delta: str
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def decision_matches_passed(self) -> "VisualInspectionOutput":
+        if self.passed != (self.decision == "pass"):
+            raise ValueError("passed 与 decision 必须一致。")
+        return self
 
 
 class WorkflowState(str, Enum):

@@ -121,6 +121,21 @@ def test_style_skill_rejects_zero_relevance_and_fewer_than_five_matches():
         StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text="编排网格")
 
 
+def test_historical_project_resolves_recorded_style_version_after_current_changes(tmp_path: Path):
+    index_path, card = _isolated_library(tmp_path)
+    historical = tmp_path / "history" / "style-001-v1.json"
+    historical.parent.mkdir()
+    historical.write_text(json.dumps(card, ensure_ascii=False), encoding="utf-8")
+    current = dict(card); current["version"] = "2.0"; current["summary"] = "new current"
+    (tmp_path / "card.json").write_text(json.dumps(current, ensure_ascii=False), encoding="utf-8")
+    index_path.write_text(json.dumps({"items": [{
+        "style_id": card["style_id"], "style_index": card["style_index"], "version": "2.0",
+        "path": "card.json", "versions": {"1.0": "history/style-001-v1.json", "2.0": "card.json"}
+    }]}), encoding="utf-8")
+    resolved = StyleCardLoader(index_path).load_version(card["style_index"], "1.0")
+    assert resolved.version == "1.0" and resolved.summary == card["summary"]
+
+
 def test_generator_rejects_duplicate_selection_before_model_call():
     cards = StyleCardLoader(STYLE_INDEX).select_distinct(count=5, task_text=RELEVANT_TASK_TEXT)
 

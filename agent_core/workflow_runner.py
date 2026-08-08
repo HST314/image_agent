@@ -5,12 +5,13 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from agent_core.batch import CandidateBatchGenerator
-from agent_core.models import ImageTaskCard, ModelRole, TaskSpecification, VisualCheckResult
+from agent_core.models import ImageTaskCard, ModelRole, StyleIdeaCard, TaskSpecification, VisualCheckResult, VisualInspectionOutput
+from agent_core.structured_output import RecoverableStructuredOutputError, validate_with_one_repair
 from agent_core.state_machine import RecoverableWorkflow
-from agent_core.workflow import TRANSITIONS, SelfCheckPolicy, validate_transition
+from agent_core.workflow import STATE_DEFINITIONS, SelfCheckPolicy, handler_for, legacy_handler_order, validate_product_successor, validate_transition
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
 from interaction.confirmation_builder import specification_from_task, specification_to_markdown, update_specification_from_markdown
 from interaction.question_generator import generate_question_card
@@ -32,6 +33,81 @@ class SkillLoadError(RuntimeError):
 Handler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
 
+def build_style_candidate_prompt(
+    idea: StyleIdeaCard, hard_constraints: dict[str, Any], category_description: str
+) -> str:
+    """Build a text-only style prompt; controlled reference assets never cross this boundary."""
+
+    style_text = {
+        "style_index": idea.style_index,
+        "style_summary": idea.style_summary,
+        "composition": idea.composition,
+        "material": idea.material,
+        "lighting": idea.lighting,
+        "narrative": idea.narrative,
+        "graphic_language": idea.graphic_language,
+        "artistic_philosophy": idea.artistic_philosophy,
+        "adaptable_mechanism": idea.adaptable_mechanism,
+        "task_fit": idea.fit_reason,
+        "prohibited_copy_elements": idea.prohibited_copy_elements,
+        "major_risk": idea.major_risk,
+        "prompt_supplement": idea.prompt_supplement,
+    }
+    return (
+        "商业效果图绘制。硬约束优先级高于风格软约束。\n"
+        f"【内容/品牌/空间/合规硬约束（不得改写）】\n{json.dumps(hard_constraints, ensure_ascii=False, sort_keys=True)}\n"
+        f"【品类硬约束】\n{category_description}\n"
+        f"【对应风格的结构化文字（仅作为软约束）】\n{json.dumps(style_text, ensure_ascii=False, sort_keys=True)}\n"
+        "只借鉴抽象视觉语言；不得复制参考图的主体、构图、文字、标识或任何独特表达。"
+        "不得推断、请求或传递参考图字节、文件路径或 URI。"
+    )
+
+
+def validate_candidate_mechanisms(ideas: list[StyleIdeaCard], *, expected_count: int = 5) -> None:
+    """Reject incomplete or falsely duplicated five-direction batches before rendering."""
+
+    if len(ideas) != expected_count:
+        raise ValueError(f"候选机制必须恰好为 {expected_count} 种。")
+    if len({idea.style_index for idea in ideas}) != expected_count:
+        raise ValueError("候选 style_index 不唯一，禁止假装完成五种机制。")
+    fields = ("composition", "material", "lighting", "narrative", "graphic_language")
+    signatures: set[tuple[str, ...]] = set()
+    for idea in ideas:
+        signature = tuple(" ".join(str(getattr(idea, field)).split()).casefold() for field in fields)
+        if any(not value for value in signature):
+            raise ValueError(f"候选 {idea.style_index} 的机制说明不完整。")
+        if signature in signatures:
+            raise ValueError("候选的构图、材质、光影、叙事和图形语言机制重复，禁止生图。")
+        signatures.add(signature)
+
+
+def _task_hard_constraints(task_card: ImageTaskCard, spec: TaskSpecification) -> dict[str, Any]:
+    facts = {fact.label: fact.value for fact in spec.facts}
+    facts.update({str(key): value for key, value in task_card.known_facts.items()})
+
+    def matching(*terms: str) -> dict[str, Any]:
+        return {key: value for key, value in facts.items() if any(term in key.lower() for term in terms)}
+
+    return {
+        "content": {
+            "deliverable_goal": task_card.deliverable_goal,
+            "usage_context": task_card.usage_context,
+            "confirmed_specification": specification_to_markdown(spec),
+        },
+        "brand": matching("品牌", "brand"),
+        "space": matching("空间", "尺寸", "版式", "space", "size", "layout"),
+        "compliance": matching("合规", "禁止", "授权", "compliance", "forbidden", "license"),
+    }
+
+
+class _RunnerStyleVLMClient:
+    def __init__(self, runner: "WorkflowRunner") -> None:
+        self.runner = runner
+
+    def inspect(self, image_uri: str, prompt: str) -> dict[str, object]:
+        return self.runner._style_vlm_call(image_uri, prompt)
+
+
 @dataclass
 class RunnerOptions:
     selected_id: str | None = None
@@ -42,17 +118,20 @@ class RunnerOptions:
     final_action: str | None = None
     actor: str | None = None
     clarification_answers: dict[str, Any] | None = None
+    quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
+    idempotency_key: str | None = None
 
 
 class WorkflowRunner:
     """Run registered real handlers and checkpoint every successful boundary."""
 
-    ORDER = ("intake_clarify", "confirmation_build", "initial_candidate_generation",
-             "master_candidate_selection", "self_check_iteration", "human_prompt_iteration", "final_approval")
+    ORDER = legacy_handler_order()
 
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  runtime_policy: RuntimePolicy | None = None,
-                 output: Callable[[str], None] | None = None) -> None:
+                 output: Callable[[str], None] | None = None,
+                 should_cancel: Callable[[], bool] | None = None,
+                 progress: Callable[[int, int, str], None] | None = None) -> None:
         self.store = store
         self.policy = runtime_policy or RuntimePolicy.from_file(Path("configs/runtime.yaml"))
         self.store.assert_runtime_mode("offline" if offline_mode else "real")
@@ -60,18 +139,32 @@ class WorkflowRunner:
         self.gateway = RuntimeModelGateway(store, ModelRouter.from_file(config), executor=executor, offline_mode=offline_mode)
         self.offline_mode = offline_mode
         self.output = output or (lambda _: None)
+        self.should_cancel = should_cancel or (lambda: False)
+        self.progress = progress or (lambda _completed, _total, _unit: None)
         self.presenter = Presenter()
         self.workflow = RecoverableWorkflow(store)
-        self.handlers: dict[str, Handler] = {
-            "intake_clarify": self._clarify, "confirmation_build": self._confirmation,
-            "initial_candidate_generation": self._candidates, "master_candidate_selection": self._selection,
-            "self_check_iteration": self._self_check, "human_prompt_iteration": self._human_rework,
-            "final_approval": self._final,
-        }
+        self.handlers: dict[str, Handler] = {}
+        for definition in STATE_DEFINITIONS.values():
+            handler = definition["handler"]
+            implementation = getattr(self, definition["implementation"])
+            existing = self.handlers.setdefault(handler, implementation)
+            if existing != implementation:
+                raise ValueError(f"状态目录中的处理器 {handler!r} 实现发生漂移。")
 
     def next_state(self, snapshot: dict[str, Any] | None) -> str:
         if snapshot is None or not snapshot.get("state"): return self.ORDER[0]
-        if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection"}:
+        cursor = self.store.execution_cursor()
+        if cursor:
+            if str(snapshot.get("state")) != str(cursor.get("handler")):
+                raise ValueError("检查点执行游标与兼容 state 投影不一致，拒绝执行。")
+            product_state = str(cursor.get("product_state"))
+            if product_state == "delivery_frozen":
+                raise ValueError("工程已经完成最终确认。")
+            try:
+                return handler_for(product_state)
+            except KeyError as exc:
+                raise ValueError(f"产品状态 {product_state!r} 没有可执行处理器。") from exc
+        if snapshot.get("phase") in {"waiting_task_spec_confirmation", "waiting_final_confirmation", "waiting_clarification", "waiting_master_selection", "waiting_quality_disposition"}:
             return str(snapshot.get("state"))
         if snapshot.get("phase") == "waiting_human_rework":
             return "human_prompt_iteration"
@@ -89,6 +182,17 @@ class WorkflowRunner:
 
     def _run_locked(self, snapshot: dict[str, Any] | None, options: RunnerOptions, *, only_state: str | None = None) -> dict[str, Any]:
         data = dict(snapshot or {}); target = only_state or self.next_state(snapshot)
+        cursor = self.store.execution_cursor()
+        # Normal resume is cursor-driven. `only_state` is the established retry
+        # adapter and remains compatible with explicit snapshots supplied by it.
+        if cursor and snapshot is not None and only_state is None:
+            product_state = str(cursor["product_state"])
+            if product_state not in STATE_DEFINITIONS:
+                raise ValueError("检查点执行游标引用未知产品状态。")
+            cursor_handler = str(cursor["handler"])
+            if str(snapshot.get("state") or "") != cursor_handler:
+                raise ValueError("检查点执行游标与兼容 state 投影不一致，拒绝执行。")
+            validate_product_successor(product_state, target)
         while True:
             current = str(data.get("state", ""))
             if current and current != target:
@@ -213,9 +317,14 @@ class WorkflowRunner:
         # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
         from interaction.approval_gate import TaskConfirmationDoc
         doc = TaskConfirmationDoc(task_id=task_card.task_id, confirmed_facts=[], default_handling_for_unknowns=[])
-        idea_cards = StyleIdeaGenerator(offline_mode=self.offline_mode).generate(
+        idea_cards = StyleIdeaGenerator(
+            client=None if self.offline_mode else _RunnerStyleVLMClient(self),
+            offline_mode=self.offline_mode,
+            failure_recorder=self._record_structured_output_failure,
+        ).generate(
             task_card=task_card, confirmation_doc=doc, style_cards=style_cards, count=self.policy.candidate_count
         )
+        validate_candidate_mechanisms(idea_cards, expected_count=self.policy.candidate_count)
 
         # 3. 终端输出这 5 张文本卡片给用户
         self.output("\n=================== 🎨 筛选出 5 种艺术风格方向 ===================")
@@ -231,27 +340,48 @@ class WorkflowRunner:
         self.output("保持主体内容、品牌色彩与空间条件一致，正在按上述 5 种风格分别生图，请稍候...\n")
 
         # 4. 生图逻辑：固定内容与品牌色，只注入各自风格
+        hard_constraints = _task_hard_constraints(task_card, spec)
+        category_description = category_skill.prompt_injection.category_description if category_skill else ""
+
+        slot_identities = [idea.style_index for idea in idea_cards]
+        prompt_version = "style-candidate-v2"
+        style_by_index = {card.style_index: card for card in style_cards}
+        style_audit: list[dict[str, Any]] = []
+
         def render(index: int) -> dict[str, Any]:
+            if self.should_cancel():
+                raise RuntimeError("作业已请求取消，未开始的供应商调用已停止。")
             idea = idea_cards[index] if index < len(idea_cards) else None
-            prompt = (
-                f"商业效果图绘制。\n"
-                f"【项目主体与内容规范】\n{specification_to_markdown(spec)}\n"
-                f"【艺术风格机制】\n"
-                f"风格名称：{idea.title if idea else ''}\n"
-                f"构图分布：{idea.composition if idea else ''}\n"
-                f"材质光影：{idea.material if idea else ''}\n"
-                f"【品类规范】\n{category_skill.prompt_injection.category_description if category_skill else ''}\n"
-                f"要求：保持项目主体与品牌色彩一致，呈现选定的艺术风格机制。"
-            )
-            result = self._image_call("initial_candidate_generation", prompt, [], index=index)
+            if idea is None:
+                raise ValueError(f"候选槽位 {index} 缺少已绑定的 VLM 风格理解。")
+            prompt = build_style_candidate_prompt(idea, hard_constraints, category_description)
+            # Scheme B invariant: reference images are VLM-only and never image-provider inputs.
+            slot_key = content_hash(["initial_candidate_generation", spec.content_hash, index, idea.style_index])
+            result = self._image_call("initial_candidate_generation", prompt, [], index=index, idempotency_key=slot_key)
+            card = style_by_index[idea.style_index]
+            style_audit.append({
+                "slot": index,
+                "style_index": idea.style_index,
+                "style_entry_version": card.version,
+                "vlm_input_asset_sha256": card.reference_image.sha256,
+                "structured_output": idea.model_dump(mode="json"),
+                "prompt_version": prompt_version,
+                "prompt_sha256": content_hash(prompt),
+                "render_idempotency_key": slot_key,
+                "render_reference_count": 0,
+            })
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}", "style_name": idea.title if idea else f"方向 {index + 1}"}
 
         batch = CandidateBatchGenerator(self.store, render, attempts=self.policy.max_render_retries + 1,
-                                        max_workers=self.policy.candidate_concurrency).generate(
-                                            spec.content_hash, count=self.policy.candidate_count)
+                                        max_workers=self.policy.candidate_concurrency,
+                                        should_cancel=self.should_cancel,
+                                        on_progress=lambda completed, total: self.progress(completed, total, "candidate")).generate(
+                                            spec.content_hash, count=self.policy.candidate_count,
+                                            slot_identities=slot_identities)
         if batch["failed"]: 
             raise RuntimeError(f"候选图有 {len(batch['failed'])} 项超时失败；成功项已保存，运行 resume 可重试。")
         return {"candidates": batch["succeeded"], "style_idea_cards": [c.model_dump(mode="json") for c in idea_cards],
+                "style_scheme": "B", "style_slot_audit": sorted(style_audit, key=lambda item: item["slot"]),
                 "skill_status": "degraded" if degraded_reasons else "ready",
                 "skill_degradation_reasons": degraded_reasons}
 
@@ -270,6 +400,9 @@ class WorkflowRunner:
         return {"master_asset": self.workflow.select_master(data["candidates"], selected), "waiting": False, "phase": "master_selected"}
 
     def _self_check(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        quality_action = options.get("quality_action")
+        if quality_action:
+            return self._quality_disposition(data, options)
         spec = TaskSpecification.model_validate(data["task_specification"])
         policy_data = data.get("self_check_policy", self.policy.self_check.model_dump(mode="json"))
         policy_data = dict(policy_data)
@@ -283,6 +416,48 @@ class WorkflowRunner:
                           constraints=[], approve=(lambda _: action) if action else None,
                           start_round=int(data.get("round", 1)))
         return {**result, "current_asset": result.get("asset", data.get("master_asset"))}
+
+    def _quality_disposition(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+        key = str(options.get("idempotency_key") or "").strip()
+        actor = str(options.get("actor") or "").strip()
+        for event in reversed(self.store.history()):
+            if event.get("type") == "quality_disposition_recorded" and event.get("idempotency_key") == key and key:
+                if event.get("action") != options["quality_action"]:
+                    raise ValueError("同一幂等键不能用于不同人工分流动作。")
+                return dict(event["result"])
+        if data.get("phase") != "waiting_quality_disposition" or data.get("calibration_status") != "waiting_human_disposition":
+            raise ValueError("仅达到质检上限且仍未通过时可提交人工分流动作。")
+        if not key:
+            raise ValueError("人工分流动作必须提供 idempotency_key。")
+        if not actor:
+            raise ValueError("人工分流动作必须提供 actor。")
+        action = options["quality_action"]
+        common = {**data, "quality_disposition": {"action": action, "actor": actor, "idempotency_key": key}}
+        if action == "manual_rework":
+            result = {**common, "waiting": True, "phase": "waiting_human_rework", "completed": False}
+        elif action == "abandon":
+            result = {**common, "waiting": False, "phase": "abandoned", "terminal": True,
+                      "completed": False, "calibration_status": "abandoned",
+                      "termination_satisfied": False, "termination_reason": "human_abandoned"}
+        elif action == "continue_generation":
+            current = data.get("current_asset") or data["asset"]
+            prompt = str((data.get("inspection") or {}).get("rework_prompt_delta") or "按未通过项继续修正画面")
+            call_key = self.store.idempotency_key("quality_continue_generation", key, content_hash(prompt),
+                                                  "image", current["sha256"])
+            generated = normalize_image_asset(self._image_call(
+                "self_check_rework", prompt, [str(current["uri"])], idempotency_key=call_key
+            ))
+            next_data = {**common, "asset": generated, "current_asset": generated, "round": 1,
+                         "quality_cycle": int(data.get("quality_cycle", 1)) + 1, "phase": "round_checkpointed",
+                         "waiting": False, "inspection": None, "failed_items": [],
+                         "latest_checked_asset_hash": None, "calibration_status": "in_progress"}
+            result = self._self_check(next_data, {**options, "quality_action": None})
+            result["quality_cycle"] = next_data["quality_cycle"]
+        else:
+            raise ValueError("未知人工分流动作。")
+        self.store.events.append("quality_disposition_recorded", action=action, actor=actor,
+                                 idempotency_key=key, result=result)
+        return result
     
     def _human_rework(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
         prompt = options.get("human_prompt")
@@ -350,22 +525,55 @@ class WorkflowRunner:
                 f"设计任务书要求：\n{prompt}"
             )
             
-            return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
-                lambda route: self._vlm(route).inspect(image_uri, inspection_prompt), 
-                messages=[{"role":"user","content":inspection_prompt},{"role":"image","content":image_uri}],
-                variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
+            def invoke(current_prompt: str) -> Any:
+                return self.gateway.call("self_check_inspection", ModelRole.VISION_LANGUAGE_MODEL,
+                    lambda route: self._vlm(route).inspect(image_uri, current_prompt),
+                    messages=[{"role":"user","content":current_prompt},{"role":"image","content":image_uri}],
+                    variables={"image":image_uri}, template_id="visual-check", template_version="2", input_refs=[image_uri], needs_images=1)
+            return validate_with_one_repair(
+                output_kind="visual_inspection", model=VisualInspectionOutput, invoke=invoke,
+                prompt=inspection_prompt, schema=VisualInspectionOutput.model_json_schema(),
+                on_failure=self._record_structured_output_failure,
+            ).model_dump()
+
+    def _record_structured_output_failure(self, error: RecoverableStructuredOutputError) -> None:
+        self.store.events.append(
+            "structured_output_recovery_required", output_kind=error.output_kind,
+            validation_error=error.validation_error, raw_output=error.redacted_output, retryable=True,
+        )
 
     def _vlm(self, route: ModelRoute):
         client = build_vlm_client(route.binding)
         if client is None: raise RuntimeError("视觉检查模型不可用。")
         return client
 
-    def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None) -> dict[str, Any]:
+    def _style_vlm_call(self, image_uri: str, prompt: str) -> dict[str, object]:
+        import base64
+        import hashlib
+        encoded = image_uri.split(",", 1)[1]
+        controlled_ref = f"controlled-style-sha256:{hashlib.sha256(base64.b64decode(encoded)).hexdigest()}"
+        return self.gateway.call(
+            "style_reference_interpretation",
+            ModelRole.VISION_LANGUAGE_MODEL,
+            lambda route: self._vlm(route).inspect(image_uri, prompt),
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "image", "content": "controlled-style-reference"},
+            ],
+            variables={"controlled_reference": controlled_ref},
+            template_id="style-reference-interpretation",
+            template_version="1",
+            input_refs=[controlled_ref],
+            needs_images=1,
+        )
+
+    def _image_call(self, state: str, prompt: str, references: list[str], *, index: int | None = None,
+                    idempotency_key: str | None = None) -> dict[str, Any]:
         if self.offline_mode:
             # Still cross the Gateway, so offline tests exercise routing/auditing.
             result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
                 lambda route: {"uri": f"mock://{state}/{index or 0}", "mock": True, "provider": "offline", "model": route.binding.model},
-                messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
+                messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references, "idempotency_key":idempotency_key},
                 template_id=state, template_version="2", input_refs=references, needs_images=len(references))
             return normalize_image_asset(result)
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
@@ -373,6 +581,6 @@ class WorkflowRunner:
                 model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
                 self.policy.default_output_size, {"state":state},
                 response_format=self.policy.response_format, watermark=self.policy.watermark, reference_images=references)),
-            messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},
+            messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references, "idempotency_key":idempotency_key},
             template_id=state, template_version="2", input_refs=references, needs_images=len(references))
         return persist_image_asset(result, self.store.artifacts)
