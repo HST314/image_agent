@@ -79,7 +79,7 @@ class JobStore:
                         raise ValueError("同一作业幂等键不能提交不同参数。")
                     if (job["status"] == "failed"
                             and bool((job.get("error") or {}).get("retryable", True))
-                            and int(job.get("attempt", 0)) < self.max_attempts):
+                            and int(job.get("attempt", 0)) < int(job.get("max_attempts", self.max_attempts))):
                         job.update(status="queued", error=None, updated_at=_now())
                     return dict(job), False
             job_id = f"job_{uuid4().hex}"

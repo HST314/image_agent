@@ -153,10 +153,10 @@ class OpenAICompatibleVisionLanguageClient:
         return payload
 
 
-def build_text_client(binding: StateBinding) -> TextModelClient | None:
+def build_text_client(binding: StateBinding, api_key: str | None = None) -> TextModelClient | None:
     """Create a reasoning client for a binding, or ``None`` when mock/offline."""
 
-    api_key = _api_key_for_binding(binding)
+    api_key = api_key or _api_key_for_binding(binding)
     if not api_key:
         return None
     return OpenAICompatibleTextClient(
@@ -167,10 +167,10 @@ def build_text_client(binding: StateBinding) -> TextModelClient | None:
     )
 
 
-def build_vlm_client(binding: StateBinding) -> VisionLanguageModelClient | None:
+def build_vlm_client(binding: StateBinding, api_key: str | None = None) -> VisionLanguageModelClient | None:
     """Create a VLM client for a binding, or ``None`` when mock/offline."""
 
-    api_key = _api_key_for_binding(binding)
+    api_key = api_key or _api_key_for_binding(binding)
     if not api_key:
         return None
     return OpenAICompatibleVisionLanguageClient(
