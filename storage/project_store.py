@@ -789,14 +789,15 @@ class ProjectStore:
         self.events.append("retry_started", branch=branch, state=failure["state"], from_checkpoint=pointer["path"])
         return execute(failure["state"], self.resume())
 
-    def branch_from(self, checkpoint: str, *, name: str | None = None, actor: str = "system", expected_version: int | None = None) -> str:
+    def branch_from(self, checkpoint: str, *, name: str | None = None, actor: str = "system",
+                    expected_version: int | None = None, runtime_settings: dict[str, Any] | None = None) -> str:
         with self._checkpoint_transaction():
             self._recover_checkpoint_commit_locked()
             return self._branch_from_locked(checkpoint, name=name, actor=actor,
-                                            expected_version=expected_version)
+                                            expected_version=expected_version, runtime_settings=runtime_settings)
 
     def _branch_from_locked(self, checkpoint: str, *, name: str | None, actor: str,
-                            expected_version: int | None) -> str:
+                            expected_version: int | None, runtime_settings: dict[str, Any] | None = None) -> str:
         source = self.inspect_checkpoint(checkpoint)
         if source.get("legacy_read_only"):
             raise LegacyCheckpointReadOnlyError("旧 checkpoint 状态不可安全映射；禁止从只读记录创建执行分支。")
@@ -820,13 +821,15 @@ class ProjectStore:
         relative, checksum = self.checkpoints.save(branch, 1, source["state"], data)
         pointer = {"path": relative, "checksum": checksum, "branch": branch, "sequence": 1, "state": source["state"]}
         branches["branches"][branch] = {"branch_id": branch_id, "name": branch, "parent_branch_id": parent["branch_id"],
-            "fork_checkpoint": checkpoint, "created_by": actor, "created_at": _now(), "head": pointer, "status": "active", "version": 1}
+            "fork_checkpoint": checkpoint, "created_by": actor, "created_at": _now(), "head": pointer, "status": "active", "version": 1,
+            **({"runtime_settings": runtime_settings} if runtime_settings is not None else {})}
         branches["version"] = int(branches.get("version", 0)) + 1
         atomic_json(branches_path, branches)
         manifest.update(current_branch=branch, current_branch_id=branch_id, current_checkpoint=pointer,
                         branch_version=current_version + 1, failed_step=None, updated_at=_now())
         atomic_json(self.root / "manifest.json", manifest)
-        self.events.append("branch_created", branch_id=branch_id, branch=branch, parent_branch_id=parent["branch_id"], from_checkpoint=checkpoint, actor=actor)
+        self.events.append("branch_created", branch_id=branch_id, branch=branch, parent_branch_id=parent["branch_id"], from_checkpoint=checkpoint, actor=actor,
+                           runtime_settings_version=(runtime_settings or {}).get("version"))
         return branch
 
     @contextmanager

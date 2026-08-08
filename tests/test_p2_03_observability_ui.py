@@ -27,8 +27,11 @@ def _script() -> str:
 
 
 def _obs_region(script: str) -> str:
-    """obs* 监督台模块是连续代码区，整体提取用于作用域护栏。"""
-    match = re.search(r"// ---- P2-03[\s\S]*?\n    function renderTimeline", script)
+    """obs* 监督台模块是连续代码区，整体提取用于作用域护栏。
+
+    P2-06 起健康与诊断台模块位于监督台之后，区域在 P2-06 标记处截止。
+    """
+    match = re.search(r"// ---- P2-03[\s\S]*?\n    // ---- P2-06 ", script)
     assert match, "缺少 P2-03 监督台模块"
     return match.group(0)
 

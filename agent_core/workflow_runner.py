@@ -135,11 +135,13 @@ class WorkflowRunner:
 
     def __init__(self, store: ProjectStore, config: Path, *, offline_mode: bool = False,
                  runtime_policy: RuntimePolicy | None = None,
+                 provider_api_key: str | None = None,
                  output: Callable[[str], None] | None = None,
                  should_cancel: Callable[[], bool] | None = None,
                  progress: Callable[[int, int, str], None] | None = None) -> None:
         self.store = store
         self.policy = runtime_policy or RuntimePolicy.from_file(Path("configs/runtime.yaml"))
+        self.provider_api_key = provider_api_key
         self.store.assert_runtime_mode("offline" if offline_mode else "real")
         executor = ModelExecutor(max_attempts=self.policy.max_render_retries + 1,
                                  base_delay=self.policy.retry_base_delay_seconds,
@@ -591,7 +593,7 @@ class WorkflowRunner:
                 "delivery_frozen": True, "waiting": False, "phase": "delivery_frozen"}
 
     def _text(self, route: ModelRoute):
-        client = build_text_client(route.binding)
+        client = build_text_client(route.binding, self.provider_api_key)
         if client is None: raise RuntimeError("文本模型不可用。")
         if route.stream_handler is None:
             return client
@@ -644,7 +646,7 @@ class WorkflowRunner:
         )
 
     def _vlm(self, route: ModelRoute):
-        client = build_vlm_client(route.binding)
+        client = build_vlm_client(route.binding, self.provider_api_key)
         if client is None: raise RuntimeError("视觉检查模型不可用。")
         return client
 
@@ -683,6 +685,7 @@ class WorkflowRunner:
             return asset
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
             lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or None,
+                api_key=self.provider_api_key,
                 model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
                 self.policy.default_output_size, {"state":state},
                 response_format=self.policy.response_format, watermark=self.policy.watermark, reference_images=references)),

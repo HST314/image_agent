@@ -47,13 +47,26 @@ def test_history_frozen_contract_markers_present() -> None:
 
 
 def test_history_ui_has_no_writeback_or_edit_entry() -> None:
-    """历史时间线不得提供覆盖/写回操作，历史任务书与图片无编辑入口。"""
+    """历史时间线不得提供覆盖/写回操作，历史任务书与图片无编辑入口。
+
+    P2-05 起运行时设置台按冻结契约合法使用 PATCH（仅 /api/runtime-settings），
+    且只允许出现在 P2-05 模块区域；历史时间线区域与其余模块仍零 PATCH，
+    PUT/DELETE 全页面禁止。
+    """
     html = FRONTEND_HTML.read_text(encoding="utf-8")
     assert "contenteditable" not in html
-    for token in ("method:'PATCH'", "method:'PUT'", "method:'DELETE'",
-                  'method:"PATCH"', 'method:"PUT"', 'method:"DELETE"'):
-        assert token not in html, f"历史区域出现写回能力标记: {token}"
+    for token in ("method:'PUT'", "method:'DELETE'",
+                  'method:"PUT"', 'method:"DELETE"'):
+        assert token not in html, f"页面出现写回能力标记: {token}"
     script = _script()
+    stgs_region = re.search(
+        r"// ---- P2-05 [\s\S]*?\n    // ---- P2-04 ", script
+    )
+    assert stgs_region, "缺少 P2-05 运行时设置台模块区域"
+    assert "method:'PATCH'" in stgs_region.group(0), "P2-05 区域应包含冻结的 PATCH 修改通道"
+    residual = script.replace(stgs_region.group(0), "")
+    for token in ("method:'PATCH'", 'method:"PATCH"'):
+        assert token not in residual, f"PATCH 只允许出现在 P2-05 设置台区域: {token}"
     for fn in ("renderHistoryDetail", "histFactCard", "histFactBody", "histAssetCard"):
         body = re.search(rf"function {fn}\([\s\S]*?\n    }}", script)
         assert body, f"未找到函数 {fn}"
