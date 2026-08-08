@@ -1,7 +1,6 @@
 """Versioned, schema-driven runtime settings with secure secret handling."""
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +12,7 @@ from pydantic import ValidationError
 
 from configs.runtime_policy import RuntimePolicy
 from storage.project_store import atomic_json
+from storage import file_lock
 
 
 class SettingsConflict(ValueError): pass
@@ -79,12 +79,12 @@ class RuntimeSettingsStore:
         self.root.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
+            file_lock.lock(fd, file_lock.LOCK_EX if write else file_lock.LOCK_SH)
             data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else self._initial()
             data.setdefault("secret_revisions", {})
             return operation(data)
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN); os.close(fd)
+            file_lock.unlock(fd); os.close(fd)
 
     def _initial(self) -> dict[str, Any]:
         policy = self.defaults.model_dump(mode="json")

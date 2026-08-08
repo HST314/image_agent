@@ -301,19 +301,30 @@ class WorkflowRunner:
             raise ValueError("当前任务书版本尚未人工确认，禁止调用付费生图。")
         task_card = ImageTaskCard.model_validate(data["task_card"])
         
-        # 1. 匹配广告品类 Skill
+        # 1. Resolve the explicitly versioned built-in category first.  The
+        # external advertising library is a semantic fallback for categories
+        # that are not present in the approved category index.
         category_skill = None
         degraded_reasons: list[dict[str, str]] = []
         try:
-            from skills.category_library_adapter import CategoryLibraryAdapter
-            lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
-            if not lib_path.is_file():
-                raise FileNotFoundError(f"品类 Skill 库不存在：{lib_path.name}")
-            adapter = CategoryLibraryAdapter(lib_path)
-            match = adapter.load_for_task(task_card)
-            if not match:
-                raise LookupError(f"品类 {task_card.category_ref.category_id} 无匹配 Skill")
-            category_skill = match.skill
+            from skills.category_loader import CategorySkillLoader
+            category_index = Path(__file__).parent.parent / "skills/category_skills/index.json"
+            requested_id = task_card.category_ref.category_id if task_card.category_ref else None
+            indexed_ids = {
+                str(item.get("category_id"))
+                for item in CategorySkillLoader(category_index).index.get("items", [])
+            }
+            if requested_id is None or requested_id in indexed_ids:
+                category_skill = CategorySkillLoader(category_index).load_for_task(task_card)
+            else:
+                from skills.category_library_adapter import CategoryLibraryAdapter
+                lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
+                if not lib_path.is_file():
+                    raise FileNotFoundError(f"品类 Skill 库不存在：{lib_path.name}")
+                match = CategoryLibraryAdapter(lib_path).load_for_task(task_card)
+                if not match:
+                    raise LookupError(f"品类 {requested_id} 无匹配 Skill")
+                category_skill = match.skill
         except Exception as exc:
             self._handle_skill_failure("category_library", exc, degraded_reasons)
 
