@@ -119,10 +119,34 @@ def test_category_skill_missing_no_match_and_parse_error_all_block(
         "task_specification": {"task_id": "task-contract-example", "version": 1, "facts": [], "parent_hash": None, "content_hash": "s"},
         "task_spec_confirmation": {"task_spec_version": 1, "subject_sha256": "s", "actor": "a", "confirmed_at": "now"},
     }
+    data["task_card"]["category_ref"] = {
+        "category_id": "external-advertising-category", "version": "1.0"
+    }
     with pytest.raises(SkillLoadError):
         runner.run(data, RunnerOptions(), only_state="initial_candidate_generation")
     assert not rendered
     assert any(e["type"] == "skill_load_blocked" and e["skill"] == "category_library" for e in store.history())
+
+
+def test_explicit_generic_category_uses_approved_category_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = ProjectStore(tmp_path, "p-generic"); store.create()
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    monkeypatch.setattr(
+        "skills.category_library_adapter.CategoryLibraryAdapter.load_for_task",
+        lambda *_: (_ for _ in ()).throw(AssertionError("external library must not be used")),
+    )
+    monkeypatch.setattr(
+        "skills.style_loader.StyleCardLoader.select_distinct",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("style sentinel")),
+    )
+    data = {
+        "task_card": _json("examples/design_task_envelope_v1.valid.json")["task"],
+        "task_specification": {"task_id": "task-contract-example", "version": 1, "facts": [], "parent_hash": None, "content_hash": "s"},
+        "task_spec_confirmation": {"task_spec_version": 1, "subject_sha256": "s", "actor": "a", "confirmed_at": "now"},
+    }
+    with pytest.raises(SkillLoadError, match="style_library"):
+        runner.run(data, RunnerOptions(), only_state="initial_candidate_generation")
+    assert not any(e["type"] == "skill_load_blocked" and e["skill"] == "category_library" for e in store.history())
 
 
 def test_explicit_degraded_policy_is_visible(tmp_path: Path) -> None:

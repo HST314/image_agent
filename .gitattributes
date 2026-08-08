@@ -1,0 +1,2 @@
+# Reference-image hashes are byte-exact and must survive Windows checkout.
+skills/style_cards/references/** -text

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from storage.project_store import FORMAT_VERSION, ImmutableRecordError, content_hash, _now
+from storage import file_lock
 
 
 class PromptStore:
@@ -57,7 +57,7 @@ class PromptStore:
             raise ValueError("文本增量不能为空。")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a+", encoding="utf-8") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            file_lock.lock(stream, file_lock.LOCK_EX)
             stream.seek(0)
             events = [json.loads(line) for line in stream if line.strip()]
             if not any(x.get("call_id") == call_id for x in events):
@@ -70,7 +70,7 @@ class PromptStore:
             stream.seek(0, os.SEEK_END)
             stream.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
             stream.flush(); os.fsync(stream.fileno())
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            file_lock.unlock(stream)
             return sequence
 
     def complete(self, prompt_id: str, *, output_raw: Any, output_parsed: Any = None,
@@ -163,14 +163,14 @@ class PromptStore:
     def _all(self) -> list[dict[str, Any]]:
         if not self.path.exists(): return []
         with self.path.open("r", encoding="utf-8") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            file_lock.lock(stream, file_lock.LOCK_SH)
             try: return [json.loads(line) for line in stream if line.strip()]
-            finally: fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            finally: file_lock.unlock(stream)
 
     def _append_unique(self, item: dict[str, Any], unique: tuple[Any, ...] | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a+", encoding="utf-8") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            file_lock.lock(stream, file_lock.LOCK_EX)
             stream.seek(0)
             existing = [json.loads(line) for line in stream if line.strip()]
             if unique and any((x.get("call_id"), x.get("event_kind"), x.get("sequence")) == unique for x in existing):
@@ -178,7 +178,7 @@ class PromptStore:
             stream.seek(0, os.SEEK_END)
             stream.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
             stream.flush(); os.fsync(stream.fileno())
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            file_lock.unlock(stream)
 
     @classmethod
     def _redact(cls, value: Any) -> Any:

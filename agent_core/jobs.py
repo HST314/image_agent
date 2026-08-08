@@ -1,7 +1,6 @@
 """Durable, process-safe asynchronous workflow jobs."""
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import threading
@@ -13,6 +12,7 @@ from uuid import uuid4
 
 from storage.project_store import atomic_json, content_hash
 from agent_core.error_taxonomy import error_record
+from storage import file_lock
 
 
 def _now() -> str:
@@ -45,7 +45,7 @@ class JobStore:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            file_lock.lock(descriptor, file_lock.LOCK_EX)
             data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {"version": 2, "jobs": {}}
             # Read-time, locked migration keeps pre-P1 job files resumable and
             # makes every subsequently returned record satisfy AsyncJob v1.
@@ -67,7 +67,7 @@ class JobStore:
             atomic_json(self.path, data)
             return result
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            file_lock.unlock(descriptor)
             os.close(descriptor)
 
     def create(self, idempotency_key: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:

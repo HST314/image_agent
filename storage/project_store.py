@@ -8,12 +8,13 @@ import json
 import os
 import shutil
 import threading
-import fcntl
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
+
+from storage import file_lock
 
 FORMAT_VERSION = 1
 CHECKPOINT_ENVELOPE_VERSION = 2
@@ -91,7 +92,7 @@ class EventStore:
         with guard:
             descriptor = os.open(self.path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                file_lock.lock(descriptor, file_lock.LOCK_EX)
                 existing = self.read_all()
                 event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex,
                          "sequence": int(existing[-1].get("sequence", len(existing))) + 1 if existing else 1,
@@ -101,7 +102,7 @@ class EventStore:
                     raise OSError("事件日志写入不完整")
                 os.fsync(descriptor)
             finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                file_lock.unlock(descriptor)
                 os.close(descriptor)
         return event
 
@@ -120,7 +121,7 @@ class EventStore:
         if not self.path.exists():
             return items, last_sequence
         with self.path.open("r", encoding="utf-8") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            file_lock.lock(stream, file_lock.LOCK_SH)
             try:
                 for raw in stream:
                     if not raw.strip():
@@ -137,7 +138,7 @@ class EventStore:
                     else:
                         break
             finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                file_lock.unlock(stream)
         return items, last_sequence
 
     def last_sequence(self) -> int:
@@ -146,13 +147,13 @@ class EventStore:
         if not self.path.exists():
             return last
         with self.path.open("r", encoding="utf-8") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            file_lock.lock(stream, file_lock.LOCK_SH)
             try:
                 for raw in stream:
                     if raw.strip():
                         last = int(json.loads(raw).get("sequence", last))
             finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                file_lock.unlock(stream)
         return last
 
     def iter_readonly(self) -> Iterator[dict[str, Any]]:
@@ -160,13 +161,13 @@ class EventStore:
         if not self.path.exists():
             return
         with self.path.open("r", encoding="utf-8") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+            file_lock.lock(stream, file_lock.LOCK_SH)
             try:
                 for raw in stream:
                     if raw.strip():
                         yield json.loads(raw)
             finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                file_lock.unlock(stream)
 
 
 class _LegacyPromptStore:
@@ -360,7 +361,7 @@ class ProjectStore:
         projects_root = self.root.parent
         descriptor = os.open(projects_root / ".design-task-idempotency.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            file_lock.lock(descriptor, file_lock.LOCK_EX)
             registry_path = projects_root / ".design-task-idempotency.json"
             registry = json.loads(registry_path.read_text(encoding="utf-8"))
             record = registry.get(key)
@@ -373,7 +374,7 @@ class ProjectStore:
             if (self.root / "manifest.json").exists() or any(self.root.iterdir()):
                 raise ProjectExistsError("残留目录包含工程或未知数据，拒绝接管。")
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            file_lock.unlock(descriptor)
             os.close(descriptor)
 
     @classmethod
@@ -385,7 +386,7 @@ class ProjectStore:
         registry_path = root / ".design-task-idempotency.json"
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            file_lock.lock(descriptor, file_lock.LOCK_EX)
             registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else {}
             existing = registry.get(key)
             if existing:
@@ -414,7 +415,7 @@ class ProjectStore:
             atomic_json(registry_path, registry)
             return project_id, True
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            file_lock.unlock(descriptor)
             os.close(descriptor)
 
     @classmethod
@@ -431,7 +432,7 @@ class ProjectStore:
         root = Path(projects_root)
         descriptor = os.open(root / ".design-task-idempotency.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            file_lock.lock(descriptor, file_lock.LOCK_EX)
             path = root / ".design-task-idempotency.json"
             registry = json.loads(path.read_text(encoding="utf-8"))
             record = registry.get(key)
@@ -442,7 +443,7 @@ class ProjectStore:
             record[f"{status}_at"] = _now()
             atomic_json(path, registry)
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            file_lock.unlock(descriptor)
             os.close(descriptor)
 
     def runtime_snapshot(self) -> dict[str, Any]:
@@ -745,10 +746,10 @@ class ProjectStore:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                file_lock.lock(descriptor, file_lock.LOCK_EX)
                 yield
             finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                file_lock.unlock(descriptor)
                 os.close(descriptor)
 
     def start_step(self, state: str, **details: Any) -> None:
@@ -848,7 +849,7 @@ class ProjectStore:
         with self._lock_guard:
             descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                file_lock.lock(descriptor, file_lock.LOCK_EX | file_lock.LOCK_NB)
             except BlockingIOError as exc:
                 os.close(descriptor)
                 raise ProjectLockError("该工程正在由另一个进程处理，请稍后重试。") from exc
@@ -867,7 +868,7 @@ class ProjectStore:
             descriptor = self._lock_descriptor
             self._lock_descriptor = None
             if descriptor is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                file_lock.unlock(descriptor)
                 os.close(descriptor)
     def idempotency_key(self, state: str, checkpoint_hash: str, prompt_hash: str, model_hash: str, reference_hash: str = "") -> str:
         return content_hash([state, checkpoint_hash, prompt_hash, model_hash, reference_hash])
