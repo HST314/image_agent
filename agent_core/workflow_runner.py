@@ -22,6 +22,7 @@ from render_clients.ark_client import ArkImageRenderClient
 from render_clients.payload_mapper import build_render_payload
 from storage.project_store import ProjectStore, content_hash
 from storage.assets import normalize_image_asset, persist_image_asset
+from storage.prompt_store import CompletedProviderResultError
 from agent_core.guided_edit import GuidedEditRequest, compose_guidance
 from interaction.presenter import Presenter
 from configs.runtime_policy import RuntimePolicy
@@ -724,10 +725,21 @@ class WorkflowRunner:
         return asset
 
     def _recover_image_call(self, state: str, idempotency_key: str) -> dict[str, Any] | None:
-        pending = self.store.prompts.pending_provider_result(state=state, idempotency_key=idempotency_key)
+        pending = self.store.prompts.recoverable_provider_result(state=state, idempotency_key=idempotency_key)
         if pending is None:
             return None
         call_id, result = pending
+        if result.get("artifact_id"):
+            try:
+                record = self.store.artifacts.record(result["artifact_id"])
+                self.store.artifacts.resolve(result["artifact_id"])
+                if record.get("sha256") != result.get("sha256"):
+                    raise CompletedProviderResultError("已入库供应商资产哈希与调用审计不一致，禁止再次付费。")
+            except CompletedProviderResultError:
+                raise
+            except Exception as exc:
+                raise CompletedProviderResultError("已入库供应商资产无法完成受控校验，禁止再次付费。") from exc
+            return {**result, "model_call_id": call_id}
         asset = persist_image_asset(result, self.store.artifacts)
         self.store.prompts.status(call_id, "ingested", artifact_id=asset["artifact_id"], sha256=asset["sha256"])
         asset["model_call_id"] = call_id

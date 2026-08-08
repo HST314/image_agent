@@ -256,7 +256,7 @@ projects/<project_id>/
 
 事件和 Prompt JSONL 每次追加后也会 `flush` 和 `fsync`。Prompt 调用前写 `started` 记录，结束后追加与父记录 hash 相连的 `completed` 或 `failed` 记录，因此原始输出、解析结果、模型参数和错误均可追踪。
 
-图片调用在供应商完成后先记录 `provider_completed`，受控资产写入成功后再记录 `ingested`。若下载、MIME 校验或写盘失败，候选槽位记录 `candidate_ingestion_failed`；恢复时按同一渲染幂等键优先重试该已完成结果的入库，不新增 `candidate_attempt_started`。只有不存在已完成结果时才允许进入新的付费尝试；已完成记录存在但下载引用不可恢复时返回 `ASSET_INGESTION_FAILED` 并禁止再次付费。该追加事件兼容旧项目，无需迁移。
+图片调用在供应商完成后先记录 `provider_completed`，受控资产写入成功后再记录 `ingested`。若下载、MIME 校验或写盘失败，候选槽位记录 `candidate_ingestion_failed`；恢复时按同一渲染幂等键优先重试该已完成结果的入库，不新增 `candidate_attempt_started`。恢复探针独立于剩余付费预算，并在预算耗尽判定前执行。若进程在 `ingested` 后、`candidate_succeeded` 与完整 `style_slot_audit` 绑定前退出，重启会校验资产库记录、真实文件和哈希后只补候选/风格绑定，不重新下载或调用供应商。只有不存在已完成结果时才允许进入新的付费尝试；已完成记录存在但下载引用或已入库资产不可恢复时返回 `ASSET_INGESTION_FAILED` 并禁止再次付费。该追加事件兼容旧项目，无需迁移。
 
 #### 幂等键
 

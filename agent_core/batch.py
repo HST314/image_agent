@@ -55,21 +55,38 @@ class CandidateBatchGenerator:
                 audited_starts = sum(1 for event in keyed_events[first_started:]
                                      if event.get("type") == "candidate_attempt_started")
                 prior_started = legacy_failures + audited_starts
+
+                def recover_completed_result() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+                    if self.recover is None:
+                        return None, None
+                    try:
+                        recovered = self.recover(index, key)
+                        if recovered is None:
+                            return None, None
+                        self.store.events.append("candidate_succeeded", index=index, attempt=prior_started,
+                                                 asset=recovered, idempotency_key=key, recovered=True)
+                        return recovered, None
+                    except Exception as exc:
+                        record = error_record(exc, stage="asset_ingestion_recovery", slot=index)
+                        self.store.events.append("candidate_ingestion_failed", index=index, attempt=prior_started,
+                                                 error=record, idempotency_key=key)
+                        return None, {"index": index, "error": record, "idempotency_key": key}
+
+                # Recovery is not a paid attempt.  Probe before evaluating the
+                # remaining provider budget so the final paid result can still be
+                # ingested (or rebound) after a restart.
+                if self.should_cancel():
+                    raise JobCancelledError("作业已请求取消，恢复探针与供应商调用均未开始。")
+                recovered, recovery_failure = recover_completed_result()
+                if recovered is not None or recovery_failure is not None:
+                    return recovered, recovery_failure
                 for attempt in range(prior_started + 1, self.attempts + 1):
                     if self.should_cancel():
                         raise JobCancelledError("作业已请求取消，未开始的供应商调用已停止。")
-                    if self.recover is not None:
-                        try:
-                            recovered = self.recover(index, key)
-                            if recovered is not None:
-                                self.store.events.append("candidate_succeeded", index=index, attempt=prior_started,
-                                                         asset=recovered, idempotency_key=key, recovered=True)
-                                return recovered, None
-                        except Exception as exc:
-                            record = error_record(exc, stage="asset_ingestion_recovery", slot=index)
-                            self.store.events.append("candidate_ingestion_failed", index=index, attempt=prior_started,
-                                                     error=record, idempotency_key=key)
-                            return None, {"index": index, "error": record, "idempotency_key": key}
+                    if attempt > prior_started + 1:
+                        recovered, recovery_failure = recover_completed_result()
+                        if recovered is not None or recovery_failure is not None:
+                            return recovered, recovery_failure
                     try:
                         self.store.events.append("candidate_attempt_started", index=index, attempt=attempt,
                                                  idempotency_key=key)

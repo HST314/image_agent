@@ -157,6 +157,14 @@ class PromptStore:
 
     def pending_provider_result(self, *, state: str, idempotency_key: str) -> tuple[str, dict[str, Any]] | None:
         """Return a completed image result that has not reached ingestion."""
+        recovered = self.recoverable_provider_result(state=state, idempotency_key=idempotency_key)
+        if recovered is None or recovered[1].get("artifact_id"):
+            return None
+        return recovered
+
+    def recoverable_provider_result(self, *, state: str,
+                                    idempotency_key: str) -> tuple[str, dict[str, Any]] | None:
+        """Return a paid result needing ingestion or an ingested asset needing binding."""
         starts = [item for item in self._all()
                   if item.get("event_kind") == "call_started"
                   and item.get("state") == state
@@ -165,9 +173,20 @@ class PromptStore:
         for start in starts:
             call_id = start["call_id"]
             call = self.get(call_id)
-            statuses = {item["status"] for item in call["status_events"]}
-            if "ingested" in statuses or "provider_completed" not in statuses:
+            status_events = [item for item in self._events(call_id) if item.get("event_kind") == "status"]
+            statuses = {item["status"] for item in status_events}
+            if "provider_completed" not in statuses:
                 continue
+            ingested = next((item for item in reversed(status_events) if item.get("status") == "ingested"), None)
+            if ingested is not None:
+                artifact_id, sha256 = ingested.get("artifact_id"), ingested.get("sha256")
+                if not isinstance(artifact_id, str) or not isinstance(sha256, str):
+                    raise CompletedProviderResultError("已入库供应商结果缺少稳定资产绑定，禁止再次付费。")
+                return call_id, {"artifact_id": artifact_id, "uri": f"artifact://{artifact_id}",
+                                 "sha256": sha256, "reference_hash": sha256,
+                                 "provider": str((call.get("model") or {}).get("provider") or "unknown"),
+                                 "model": str((call.get("model") or {}).get("name") or "unknown"),
+                                 "mock": False}
             result = call.get("output_raw")
             if not isinstance(result, dict):
                 raise CompletedProviderResultError("已完成供应商结果缺少可恢复的结构化响应，禁止再次付费。")
