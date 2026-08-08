@@ -172,7 +172,6 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "model_config_available": MODEL_CONFIG.is_file(),
-        "projects_root": str(PROJECTS_ROOT),
     }
 
 
@@ -273,13 +272,13 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
 
 @app.get("/api/projects/{project_id}/assets/{artifact_id}")
 async def get_asset(project_id: str, artifact_id: str) -> FileResponse:
-    """只允许读取当前工程 artifacts/images 下的受支持图片。"""
-    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,160}", artifact_id):
+    """Resolve a stable, project-scoped artifact id to a controlled response."""
+    if not re.fullmatch(r"artifact_[a-f0-9]{64}", artifact_id):
         raise HTTPException(status_code=422, detail="资源标识无效。")
-    project_root = _store(project_id).root.resolve()
-    asset = (project_root / "artifacts" / "images" / artifact_id).resolve()
-    allowed_root = (project_root / "artifacts" / "images").resolve()
-    if allowed_root not in asset.parents or not asset.is_file():
+    store = _store(project_id)
+    try:
+        asset = store.artifacts.resolve(artifact_id)
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="图片资源不存在。")
     if asset.stat().st_size > MAX_ASSET_BYTES:
         raise HTTPException(status_code=413, detail="图片超过 25 MiB 下载限制。")

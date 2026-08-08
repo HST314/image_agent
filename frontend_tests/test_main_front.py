@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +22,8 @@ def test_health_and_frontend_are_served(client: TestClient) -> None:
     assert page.status_code == 200
     assert "Image Agent Studio" in page.text
     assert "prefers-reduced-motion" in page.text
+    assert "artifact:\\/\\/" in page.text
+    assert "projects_root" not in client.get("/api/health").json()
 
 
 @pytest.mark.parametrize("project_id", ["../escape", "a", "含中文", "bad/id"])
@@ -51,7 +54,18 @@ def test_asset_endpoint_rejects_unsupported_type(client: TestClient) -> None:
     asset_dir.mkdir(parents=True)
     (asset_dir / "note.txt").write_text("not an image", encoding="utf-8")
     response = client.get("/api/projects/safe-project/assets/note.txt")
-    assert response.status_code == 415
+    assert response.status_code == 422
+
+
+def test_asset_endpoint_resolves_project_scoped_artifact_id(client: TestClient) -> None:
+    one = main_front.ProjectStore(main_front.PROJECTS_ROOT, "project-one"); one.create()
+    two = main_front.ProjectStore(main_front.PROJECTS_ROOT, "project-two"); two.create()
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    saved = one.artifacts.save_bytes(png, suffix=".png", metadata={"media_type": "image/png"})
+    ok = client.get(f'/api/projects/project-one/assets/{saved["artifact_id"]}')
+    assert ok.status_code == 200 and ok.content == png
+    assert client.get(f'/api/projects/project-two/assets/{saved["artifact_id"]}').status_code == 404
+    assert client.get("/api/projects/project-one/assets/..%2Fmanifest.json").status_code in {404, 422}
 
 
 def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) -> None:
@@ -73,4 +87,3 @@ def test_offline_project_stops_at_a_real_waiting_checkpoint(client: TestClient) 
     assert data["snapshot"]["state"] == "intake_clarify"
     assert data["manifest"]["current_checkpoint"]["sequence"] == 1
     assert data["snapshot"].get("completed") is not True
-
