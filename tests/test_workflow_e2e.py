@@ -39,6 +39,7 @@ def test_cli_new_resume_and_registry(tmp_path: Path, capsys):
     assert "# 创作任务书" in first_stdout
     assert "candidate_index" not in first_stdout and "sha256" not in first_stdout
     store = ProjectStore(root, "p")
+    assert store.history()[0]["type"] == "project_created"
     assert store.manifest()["current_checkpoint"]["state"] == "confirmation_build"
     runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
     assert set(runner.handlers) == set(runner.ORDER)
@@ -46,6 +47,16 @@ def test_cli_new_resume_and_registry(tmp_path: Path, capsys):
     resumed_stdout = capsys.readouterr().out
     assert "请选择一张作为当前主图" in resumed_stdout and "候选方向 5" in resumed_stdout
     assert any(e["type"] == "task_spec_confirmed" for e in store.history())
+
+
+def test_cli_does_not_claim_an_error_was_recorded_when_event_append_fails(tmp_path: Path, capsys, monkeypatch):
+    task = tmp_path / "task.json"; task.write_text(json.dumps(task_payload()), encoding="utf-8")
+    monkeypatch.setattr("storage.project_store.EventStore.append", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("lock failed")))
+
+    assert main(["--projects-root", str(tmp_path / "projects"), "new", "broken", "--task", str(task), "--offline"]) == 2
+    output = capsys.readouterr().out
+    assert "详细错误已写入工程事件" not in output
+    assert "可使用 --debug 查看详细错误" in output
 
 
 def test_retry_calls_real_failed_handler_on_new_branch(tmp_path: Path):

@@ -90,7 +90,9 @@ class EventStore:
         with self._guards_guard:
             guard = self._guards.setdefault(key, threading.Lock())
         with guard:
-            descriptor = os.open(self.path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+            # file_lock wraps integer descriptors as ``r+b`` for Windows.
+            # Keep the production descriptor compatible with that contract.
+            descriptor = os.open(self.path, os.O_APPEND | os.O_CREAT | os.O_RDWR, 0o600)
             try:
                 file_lock.lock(descriptor, file_lock.LOCK_EX)
                 existing = self.read_all()

@@ -117,8 +117,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "inspect": print(view.technical(store.manifest()))
         return 0
     except Exception as exc:
-        message = str(exc) if args.debug else "流程未完成；详细错误已写入工程事件。"
-        print(f"{message}\n已有进度保存在工程目录，可修正后使用 resume 或 retry。")
+        message = str(exc) if args.debug else "流程未完成；可使用 --debug 查看详细错误。"
+        print(f"{message}\n若工程已成功创建，可修正后使用 resume 或 retry。")
         return 2
 
 def _present_result(view: Presenter, result: dict[str, object]) -> None:
