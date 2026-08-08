@@ -7,6 +7,12 @@ from model_router.executor import ModelExecutor
 from model_router.router import ModelRouter, ModelRoute
 from storage.project_store import ProjectStore, content_hash
 
+def _normalized_model_result(value: Any) -> Any:
+    """Return the stable JSON representation used for completion hashes."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return value
+
 class RuntimeModelGateway:
     def __init__(self, store: ProjectStore, router: ModelRouter, executor: ModelExecutor[Any] | None = None, *, offline_mode: bool = False) -> None:
         self.store, self.router, self.executor, self.offline_mode = store, router, executor or ModelExecutor(), offline_mode
@@ -39,8 +45,9 @@ class RuntimeModelGateway:
             if is_image:
                 self.store.prompts.status(call_id, "provider_completed")
             self.store.prompts.complete(call_id, output_raw=result)
+            normalized_result = _normalized_model_result(result)
             self.store.events.append("model_call_completed", call_id=call_id, parent_call_id=parent_call_id,
-                                     state=state, trace_id=trace, output_hash=content_hash(result))
+                                     state=state, trace_id=trace, output_hash=content_hash(normalized_result))
             if is_image and isinstance(result, dict):
                 result = {**result, "_model_call_id": call_id}
             return result
