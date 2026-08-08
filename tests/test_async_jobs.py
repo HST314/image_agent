@@ -103,12 +103,12 @@ def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_pa
         calls.append(index)
         if index in fail_once:
             fail_once.remove(index)
-            raise RuntimeError("crash after provider timeout")
+            raise ConnectionError("provider unavailable")
         return {"uri": str(index), "sha256": str(index), "candidate_index": index}
-    generator = CandidateBatchGenerator(store, render, attempts=1, max_workers=5)
+    generator = CandidateBatchGenerator(store, render, attempts=2, max_workers=5)
     first = generator.generate("same-confirmed-spec", count=5)
     second = generator.generate("same-confirmed-spec", count=5)
-    assert [item["index"] for item in first["failed"]] == [2]
+    assert not first["failed"] and len(first["succeeded"]) == 5
     assert not second["failed"] and len(second["succeeded"]) == 5
     assert calls.count(2) == 2
     assert all(calls.count(index) == 1 for index in (0, 1, 3, 4))

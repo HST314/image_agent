@@ -140,7 +140,7 @@ def test_secret_and_full_provider_body_are_redacted_and_truncated():
     assert "[REDACTED]" in record["detail"] and len(record["detail"]) <= 513
 
 
-def test_partial_success_restart_only_retries_failed_slot_and_keeps_key(tmp_path: Path):
+def test_partial_success_restart_cannot_bypass_exhausted_slot_budget(tmp_path: Path):
     store = ProjectStore(tmp_path, "partial"); store.create()
     calls = []
 
@@ -150,17 +150,18 @@ def test_partial_success_restart_only_retries_failed_slot_and_keeps_key(tmp_path
             raise ConnectionError("down")
         return {"candidate_index": index, "uri": str(index), "sha256": str(index)}
 
-    initial = CandidateBatchGenerator(store, first, attempts=1).generate("input", count=3)
-    failed_key = initial["failed"][0]["idempotency_key"]
-    assert calls == [0, 1, 2]
+    initial = CandidateBatchGenerator(store, first, attempts=2, max_workers=1).generate("input", count=3)
+    failed_key = next(e["idempotency_key"] for e in store.events.read_all() if e["type"] == "candidate_failed")
+    assert calls == [0, 1, 1, 2]
     calls.clear()
     recovered = CandidateBatchGenerator(ProjectStore(tmp_path, "partial"),
-        lambda index: calls.append(index) or {"candidate_index": index, "uri": str(index), "sha256": str(index)}, attempts=1
+        lambda index: calls.append(index) or {"candidate_index": index, "uri": str(index), "sha256": str(index)}, attempts=2
     ).generate("input", count=3)
-    assert calls == [1] and len(recovered["succeeded"]) == 3
+    assert calls == [] and len(recovered["succeeded"]) == 2
+    assert [item["index"] for item in recovered["failed"]] == [1]
     events = store.events.read_all()
-    assert [e["idempotency_key"] for e in events if e["type"] == "candidate_failed"] == [failed_key]
-    assert failed_key in [e["idempotency_key"] for e in events if e["type"] == "candidate_succeeded"]
+    assert [e["idempotency_key"] for e in events if e["type"] == "candidate_failed"] == [failed_key, failed_key]
+    assert failed_key not in [e["idempotency_key"] for e in events if e["type"] == "candidate_succeeded"]
 
 
 def test_job_retry_reuses_job_and_stops_at_runtime_limit(tmp_path: Path):

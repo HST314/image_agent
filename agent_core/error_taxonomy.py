@@ -57,6 +57,10 @@ def classify_exception(exc: BaseException) -> ClassifiedError:
         return ClassifiedError("ASSET_INGESTION_FAILED", True, "retry", 503)
     if "structured" in name or "json" in name or category == "structured_output":
         return ClassifiedError("STRUCTURED_OUTPUT_INVALID", True, "retry", 502)
+    if category == "provider_status_unknown":
+        return ClassifiedError("PROVIDER_STATUS_UNKNOWN", False, "human_decision", 504)
+    if "paidattemptbudget" in name:
+        return ClassifiedError("PAID_ATTEMPT_BUDGET_EXHAUSTED", False, "human_decision", 409)
     if isinstance(exc, TimeoutError) or category == "timeout" or "timeout" in name:
         return ClassifiedError("UPSTREAM_TIMEOUT", True, "retry", 504)
     if isinstance(exc, ConnectionError) or category in {"transport", "provider_unavailable", "provider_error"}:

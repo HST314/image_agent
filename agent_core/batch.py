@@ -5,6 +5,9 @@ from typing import Any, Callable
 from storage.project_store import ProjectStore, content_hash
 from agent_core.error_taxonomy import JobCancelledError, error_record
 
+class PaidAttemptBudgetExceeded(RuntimeError):
+    """A slot has consumed every durable paid provider attempt."""
+
 class CandidateBatchGenerator:
     def __init__(self, store: ProjectStore, render: Callable[[int], dict[str, Any]], *, attempts: int = 2, max_workers: int = 5,
                  should_cancel: Callable[[], bool] | None = None,
@@ -26,15 +29,33 @@ class CandidateBatchGenerator:
                 key = content_hash(["initial_candidate_generation", input_hash, index, identity])
                 cached = next((e.get("asset") for e in reversed(events) if e.get("type") == "candidate_succeeded" and e.get("idempotency_key") == key), None)
                 if cached: successes.append(cached); continue
+                unresolved = next((e for e in reversed(events)
+                                   if e.get("type") == "candidate_attempt_unresolved"
+                                   and e.get("idempotency_key") == key), None)
+                if unresolved:
+                    failures.append({"index": index, "error": unresolved["error"],
+                                     "idempotency_key": key})
+                    continue
                 pending.append((index, key))
             self.on_progress(len(successes), count)
 
             def one(index: int, key: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
                 error: Exception | None = None
-                for attempt in range(1, self.attempts + 1):
+                prior_started = sum(1 for event in events
+                                    if event.get("type") == "candidate_attempt_started"
+                                    and event.get("idempotency_key") == key)
+                # Compatibility with checkpoints written before attempt-start
+                # accounting existed: each recorded failure consumed one call.
+                if prior_started == 0:
+                    prior_started = sum(1 for event in events
+                                        if event.get("type") == "candidate_failed"
+                                        and event.get("idempotency_key") == key)
+                for attempt in range(prior_started + 1, self.attempts + 1):
                     if self.should_cancel():
                         raise JobCancelledError("作业已请求取消，未开始的供应商调用已停止。")
                     try:
+                        self.store.events.append("candidate_attempt_started", index=index, attempt=attempt,
+                                                 idempotency_key=key)
                         asset = self.render(index)
                         self.store.events.append("candidate_succeeded", index=index, attempt=attempt, asset=asset, idempotency_key=key)
                         return asset, None
@@ -44,8 +65,13 @@ class CandidateBatchGenerator:
                         error = exc
                         record = error_record(exc, stage="five_candidate_generation", slot=index)
                         self.store.events.append("candidate_failed", index=index, attempt=attempt, error=record, idempotency_key=key)
+                        if record["code"] == "PROVIDER_STATUS_UNKNOWN":
+                            self.store.events.append("candidate_attempt_unresolved", index=index, attempt=attempt,
+                                                     error=record, idempotency_key=key)
                         if not record["retryable"]:
                             break
+                if error is None:
+                    error = PaidAttemptBudgetExceeded("候选槽位的持久化付费尝试预算已耗尽。")
                 return None, {"index": index, "error": error_record(error or RuntimeError("unknown"), stage="five_candidate_generation", slot=index), "idempotency_key": key}
 
             with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="candidate") as pool:

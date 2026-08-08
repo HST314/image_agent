@@ -38,7 +38,10 @@ class ModelExecutor(Generic[T]):
                 finally:
                     pool.shutdown(wait=False, cancel_futures=True)
             except FutureTimeout as exc:
-                last, category, retryable = exc, "timeout", True
+                # A running thread cannot be cancelled safely.  The provider may
+                # still complete and charge this request after our local wait
+                # expires, so another paid attempt would be a blind duplicate.
+                last, category, retryable = exc, "provider_status_unknown", False
             except BaseException as exc:
                 last = exc
                 category, retryable = self.classify(exc)

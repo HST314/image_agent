@@ -143,7 +143,9 @@ class WorkflowRunner:
         self.policy = runtime_policy or RuntimePolicy.from_file(Path("configs/runtime.yaml"))
         self.provider_api_key = provider_api_key
         self.store.assert_runtime_mode("offline" if offline_mode else "real")
-        executor = ModelExecutor(max_attempts=self.policy.max_render_retries + 1,
+        # Paid render attempts are budgeted durably per candidate slot by
+        # CandidateBatchGenerator.  The executor must not multiply that budget.
+        executor = ModelExecutor(max_attempts=1,
                                  base_delay=self.policy.retry_base_delay_seconds,
                                  max_delay=self.policy.retry_max_delay_seconds,
                                  timeout=self.policy.model_timeout_seconds)
