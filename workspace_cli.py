@@ -47,8 +47,21 @@ def parser() -> argparse.ArgumentParser:
         item.add_argument("project_id"); _flow_options(item)
     for name in ("history", "inspect"):
         item = commands.add_parser(name); item.add_argument("project_id")
-    rewind = commands.add_parser("rewind", aliases=["branch"])
-    rewind.add_argument("project_id"); rewind.add_argument("--from", dest="checkpoint", required=True); rewind.add_argument("--name")
+    rewind = commands.add_parser(
+        "rewind",
+        aliases=["branch"],
+        formatter_class=lambda prog: argparse.HelpFormatter(prog, width=120),
+    )
+    rewind.add_argument("project_id")
+    rewind.add_argument(
+        "--from",
+        dest="checkpoint",
+        required=True,
+        metavar="CHECKPOINT_PATH",
+        help=("工程内 checkpoint 的完整相对路径"
+              "（例如 checkpoints/main/000007-master_candidate_selection.json）"),
+    )
+    rewind.add_argument("--name")
     rewind.add_argument("--continue", dest="continue_run", action="store_true"); _flow_options(rewind)
     return root
 

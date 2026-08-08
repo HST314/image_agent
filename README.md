@@ -96,7 +96,7 @@ python3 main.py resume demo --final-action confirm --actor <操作者标识>
 | `new <project_id> --task <path>` | 创建工程并启动工作流；同名工程不会被覆盖 |
 | `resume <project_id>` | 从最后成功 Checkpoint 的下一状态或人工等待点继续 |
 | `retry <project_id>` | 从上一成功点创建新分支，重试已记录的失败状态 |
-| `rewind <project_id> --from <checkpoint> --name <branch>` | 从历史 Checkpoint 创建无损分支；加 `--continue` 立即推进 |
+| `rewind <project_id> --from <checkpoint_path> --name <branch>` | 从历史 Checkpoint 创建无损分支；`--from` 必须使用工程内 checkpoint 的完整相对路径；加 `--continue` 立即推进（`branch` 为同义命令） |
 | `history <project_id>` | 查看自然中文审计时间线和分支信息 |
 | `inspect <project_id>` | 查看工程技术信息；需配合全局 `--debug` 显示 JSON |
 
@@ -104,6 +104,13 @@ python3 main.py resume demo --final-action confirm --actor <操作者标识>
 
 ```bash
 python3 main.py --projects-root ./projects --debug inspect demo
+```
+
+`rewind`（或同义命令 `branch`）的 `--from` 不接受 checkpoint 文件名、stem、ID 或序号，必须传入工程内 checkpoint 的完整相对路径。例如：
+
+```bash
+python3 main.py rewind demo --from checkpoints/main/000007-master_candidate_selection.json --name revision-1
+python3 main.py branch demo --from checkpoints/main/000007-master_candidate_selection.json --name revision-2
 ```
 
 完整 CLI、人工动作和故障恢复示例见 [用户与开发者指南](docs/user_and_developer_guide.md)。
