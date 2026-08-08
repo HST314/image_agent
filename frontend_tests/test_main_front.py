@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main_front
+from storage.assets import normalize_image_asset
 
 
 def _claim_mkdir_and_crash(projects_root: str, project_id: str, key: str, raw_hash: str) -> None:
@@ -258,6 +259,88 @@ def test_advance_is_idempotent_async_job_and_mode_is_immutable(client: TestClien
     assert sum(bool(body["created"]) for body in bodies) == 1
     switched = client.post("/api/projects/async-web/advance", json={"offline":False, "idempotency_key":"switch-key-001"})
     assert switched.status_code == 409
+
+
+def _quality_disposition_project(project_id: str) -> main_front.ProjectStore:
+    store = main_front.ProjectStore(main_front.PROJECTS_ROOT, project_id)
+    store.create()
+    asset = normalize_image_asset({
+        "uri": "https://images.example/quality-limit.png", "provider": "ark", "model": "seedream",
+    })
+    store.checkpoint("self_check_iteration", {
+        "state": "self_check_iteration", "phase": "waiting_quality_disposition", "waiting": True,
+        "asset": asset, "current_asset": asset, "round": 2, "quality_cycle": 1,
+        "failed_items": ["标题对比度不足"],
+        "inspection": {"passed": False, "decision": "continue", "deviations": ["标题对比度不足"],
+                       "rework_prompt_delta": "增强标题对比度", "confidence": .8},
+        "calibration_status": "waiting_human_disposition", "termination_satisfied": False,
+        "termination_reason": "solo_round_limit", "latest_checked_asset_hash": asset["sha256"],
+        "selected_policy": {"termination": "solo", "release": "auto", "max_rounds": 2},
+        "task_specification": {"task_id": "t", "version": 1, "facts": [], "parent_hash": None,
+                               "content_hash": "s"},
+    })
+    return store
+
+
+def _wait_for_job(client: TestClient, project_id: str, job_id: str) -> dict:
+    for _ in range(200):
+        job = client.get(f"/api/projects/{project_id}/jobs/{job_id}").json()
+        if job["status"] in {"succeeded", "failed", "cancelled"}:
+            return job
+        time.sleep(.01)
+    pytest.fail(f"job {job_id} did not finish")
+
+
+@pytest.mark.parametrize("action,expected_phase", [
+    ("continue_generation", "waiting_quality_disposition"),
+    ("manual_rework", "waiting_human_rework"),
+    ("abandon", "abandoned"),
+])
+def test_http_quality_disposition_preserves_idempotency_and_checkpoints(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, action: str, expected_phase: str
+) -> None:
+    monkeypatch.setattr(main_front.JOB_WORKER, "submit", lambda project_id, job_id: main_front._execute_job(
+        project_id, {"job_id": job_id}))
+    project_id = f"quality-{action.replace('_', '-')}"
+    store = _quality_disposition_project(project_id)
+    before = store.manifest()["current_checkpoint"]["sequence"]
+    payload = {"offline": True, "quality_action": action, "actor": "operator",
+               "idempotency_key": f"quality-{action}-001",
+               "expense_confirmed": action == "continue_generation"}
+
+    first = client.post(f"/api/projects/{project_id}/advance", json=payload)
+    duplicate = client.post(f"/api/projects/{project_id}/advance", json=payload)
+    assert first.status_code == duplicate.status_code == 202
+    assert first.json()["job_id"] == duplicate.json()["job_id"]
+    assert {first.json()["created"], duplicate.json()["created"]} == {True, False}
+    assert _wait_for_job(client, project_id, first.json()["job_id"])["status"] == "succeeded"
+
+    view = client.get(f"/api/projects/{project_id}").json()
+    assert view["manifest"]["current_checkpoint"]["sequence"] > before
+    assert view["snapshot"]["phase"] == expected_phase
+    if action != "continue_generation":
+        assert view["snapshot"]["quality_disposition"]["idempotency_key"] == payload["idempotency_key"]
+    recorded = [event for event in view["history"] if event["type"] == "quality_disposition_recorded"]
+    assert len(recorded) == 1 and recorded[0]["idempotency_key"] == payload["idempotency_key"]
+
+
+def test_http_quality_disposition_missing_idempotency_key_fails_without_checkpoint(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_front.JOB_WORKER, "submit", lambda project_id, job_id: main_front._execute_job(
+        project_id, {"job_id": job_id}))
+    store = _quality_disposition_project("quality-missing-key")
+    before = store.manifest()["current_checkpoint"]
+    queued = client.post("/api/projects/quality-missing-key/advance", json={
+        "offline": True, "quality_action": "abandon", "actor": "operator",
+    })
+    assert queued.status_code == 202
+    job = _wait_for_job(client, "quality-missing-key", queued.json()["job_id"])
+    assert job["status"] == "failed"
+    assert job["error"]["code"] == "INVALID_INPUT"
+    assert "idempotency_key" in job["error"]["detail"]
+    assert store.manifest()["current_checkpoint"] == before
+    assert not any(event["type"] == "quality_disposition_recorded" for event in store.history())
 
 
 def test_job_cancel_and_event_sequences(client: TestClient, monkeypatch) -> None:

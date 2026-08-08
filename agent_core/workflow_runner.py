@@ -227,7 +227,7 @@ class WorkflowRunner:
                 self.store.fail_step(target, error_record(exc, stage=target,
                     rework_round=int(data.get("round", data.get("self_check_round", 0))) or None))
                 raise
-            if only_state or data.get("waiting") or target == "final_approval": return data
+            if only_state or data.get("waiting") or data.get("terminal") or target == "final_approval": return data
             target = self.next_state(data)
 
     def _clarify(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:

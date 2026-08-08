@@ -4,7 +4,7 @@ import time
 import pytest
 from agent_core.batch import CandidateBatchGenerator
 from agent_core.context import AgentContext
-from agent_core.models import DirectionSelection, ImageTaskCard, ModelRole, ReferenceImage, SourceRef
+from agent_core.models import DirectionSelection, ImageTaskCard, ModelRole, QuestionCard, ReferenceImage, SourceRef
 from agent_core.state_machine import RecoverableWorkflow
 from agent_core.workflow import SelfCheckPolicy
 from calibrator.calibration_loop import CalibrationLoop, ManualAction
@@ -18,7 +18,7 @@ from model_router.router import ModelRouter
 from prompt_engine.context_assembler import CapabilityMismatchError, ContextAssembler, ContextPolicy
 from render_clients.ark_client import ArkImageRenderClient
 from render_clients.payload_mapper import build_render_payload
-from storage.project_store import CorruptProjectError, ProjectExistsError, ProjectLockError, ProjectStore
+from storage.project_store import CorruptProjectError, ProjectExistsError, ProjectLockError, ProjectStore, content_hash
 
 def task(unknowns=None):
     return ImageTaskCard(task_id="t", project_id="p", source_refs=[SourceRef(ref_id="s", ref_type="text")], deliverable_goal="海报", usage_context="手机", known_facts={"主体":"产品"}, unknowns=unknowns or {})
@@ -94,6 +94,34 @@ def test_10_router_hot_reload_role_capability_and_gateway_audit(tmp_path: Path):
     gateway=RuntimeModelGateway(store,router,ModelExecutor(max_attempts=1),offline_mode=True)
     result=gateway.call("initial_candidate_generation",ModelRole.TEXT_TO_IMAGE_MODEL,lambda route:{"ok":True},messages=[{"role":"user","content":"x"}],variables={},template_id="x",template_version="1",input_refs=[])
     assert result["ok"] and any(e["type"]=="model_config_loaded" for e in store.history())
+
+def test_10b_gateway_completes_pydantic_result_with_reproducible_hash(tmp_path: Path):
+    store=ProjectStore(tmp_path,"pydantic-result"); store.create()
+    router=ModelRouter.from_file(Path("configs/model_config.yaml"))
+    gateway=RuntimeModelGateway(store,router,ModelExecutor(max_attempts=1),offline_mode=True)
+    card=QuestionCard(task_id="task-pydantic",questions=[])
+
+    result=gateway.call("intake_clarify",ModelRole.REASONING_LLM,lambda route:card,
+        messages=[{"role":"user","content":"x"}],variables={},template_id="x",template_version="1",input_refs=[])
+
+    completed=[event for event in store.history() if event["type"]=="model_call_completed"]
+    assert result is card and len(completed)==1
+    assert completed[0]["output_hash"]==content_hash(card.model_dump(mode="json"))
+    assert store.prompts.get(completed[0]["call_id"])["status"]=="completed"
+
+def test_10c_gateway_failure_does_not_emit_completed_event(tmp_path: Path):
+    store=ProjectStore(tmp_path,"failed-result"); store.create()
+    router=ModelRouter.from_file(Path("configs/model_config.yaml"))
+    gateway=RuntimeModelGateway(store,router,ModelExecutor(max_attempts=1),offline_mode=True)
+
+    with pytest.raises(ModelCallError):
+        gateway.call("intake_clarify",ModelRole.REASONING_LLM,
+            lambda route: (_ for _ in ()).throw(ValueError("invalid response")),
+            messages=[{"role":"user","content":"x"}],variables={},template_id="x",template_version="1",input_refs=[])
+
+    assert not [event for event in store.history() if event["type"]=="model_call_completed"]
+    call_id=store.prompts.list_calls()["items"][0]["call_id"]
+    assert store.prompts.get(call_id)["status"]=="failed"
 
 def test_11_batch_partial_success_retry_and_idempotency(tmp_path: Path):
     store=ProjectStore(tmp_path,"p"); store.create(); calls={}
