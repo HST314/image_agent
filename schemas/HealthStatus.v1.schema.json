@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "HealthStatus.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "checked_at", "trace_id", "components"],
+  "properties": {
+    "status": {"enum": ["ready", "degraded", "not_ready"]},
+    "checked_at": {"type": "string", "format": "date-time"},
+    "trace_id": {"type": "string", "pattern": "^trace_[a-f0-9]{32}$"},
+    "components": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "error_code", "checked_at", "business_impact"],
+        "properties": {
+          "status": {"enum": ["healthy", "degraded", "unhealthy", "not_configured", "offline"]},
+          "error_code": {"type": "string", "pattern": "^[A-Z0-9_]+$"},
+          "checked_at": {"type": "string", "format": "date-time"},
+          "business_impact": {"type": "string"}
+        }
+      }
+    }
+  }
+}

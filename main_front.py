@@ -28,6 +28,7 @@ from agent_core.jobs import JobStore, WorkflowJobWorker
 from agent_core.guided_edit import GuidedEditRequest
 from agent_core.delivery import DeliveryService
 from agent_core.observability import event_page, progress_projection
+from agent_core.health import HealthService
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 
@@ -265,6 +266,33 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
 
 
 JOB_WORKER = WorkflowJobWorker(_execute_job)
+HEALTH_SERVICE: HealthService | None = None
+
+
+def _provider_configured_readonly() -> bool:
+    """Inspect secret state without invoking RuntimeSettingsStore's lock-file write path."""
+    path = PROJECTS_ROOT / ".runtime-settings.json"
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return bool((data.get("secrets") or {}).get("provider_api_key"))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _health_service() -> HealthService:
+    global HEALTH_SERVICE
+    if HEALTH_SERVICE is None:
+        HEALTH_SERVICE = HealthService(
+            PROJECTS_ROOT, MODEL_CONFIG,
+            provider_configured=_provider_configured_readonly,
+            asset_proxy_configured=lambda: any(
+                getattr(route, "path", None) == "/api/projects/{project_id}/assets/{artifact_id}"
+                for route in app.routes
+            ),
+        )
+    return HEALTH_SERVICE
 
 
 def _recover_jobs(project_id: str) -> None:
@@ -334,10 +362,31 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "model_config_available": MODEL_CONFIG.is_file(),
-    }
+    """Compatibility liveness endpoint; no dependency probes or internal paths."""
+    result = _health_service().liveness()
+    return {**result, "status": "ok"}
+
+
+@app.get("/api/health/live")
+async def health_live() -> dict[str, Any]:
+    return _health_service().liveness()
+
+
+@app.get("/api/health/ready")
+async def health_ready() -> JSONResponse:
+    result = await asyncio.to_thread(_health_service().readiness)
+    return JSONResponse(status_code=503 if result["status"] == "not_ready" else 200, content=result)
+
+
+@app.get("/api/internal/diagnostics/{trace_id}")
+async def health_diagnostics(trace_id: str, request: Request) -> dict[str, Any]:
+    """Raw probe details are isolated behind the host application's admin hook."""
+    if _settings_role(request) != "admin":
+        raise HTTPException(status_code=403, detail={"code": "DIAGNOSTICS_FORBIDDEN", "message": "无内部诊断权限。"})
+    result = _health_service().diagnostics(trace_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail={"code": "DIAGNOSTIC_TRACE_NOT_FOUND", "message": "诊断记录不存在或已过期。"})
+    return result
 
 @app.get("/api/runtime-settings")
 async def list_runtime_settings() -> dict[str, Any]:
