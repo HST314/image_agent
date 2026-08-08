@@ -60,16 +60,19 @@ class EventStore:
         self.path = path
 
     def append(self, event_type: str, **payload: Any) -> dict[str, Any]:
-        event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex, "timestamp": _now(), "type": event_type, **payload}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         key = str(self.path.resolve())
         with self._guards_guard:
             guard = self._guards.setdefault(key, threading.Lock())
-        encoded = (json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode()
         with guard:
             descriptor = os.open(self.path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
+                existing = self.read_all()
+                event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex,
+                         "sequence": int(existing[-1].get("sequence", len(existing))) + 1 if existing else 1,
+                         "timestamp": _now(), "type": event_type, **payload}
+                encoded = (json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode()
                 if os.write(descriptor, encoded) != len(encoded):
                     raise OSError("事件日志写入不完整")
                 os.fsync(descriptor)
