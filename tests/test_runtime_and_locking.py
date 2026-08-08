@@ -21,6 +21,14 @@ def _hold_lock(root: str, ready, release) -> None:
         release.wait(10)
 
 
+def _try_lock(root: str, results) -> None:
+    try:
+        with ProjectStore(root, "p").lock():
+            results.put(("acquired", os.getpid()))
+    except ProjectLockError:
+        results.put(("blocked", os.getpid()))
+
+
 def test_runtime_policy_rejects_unknown_invalid_and_hashes(tmp_path: Path):
     raw = yaml.safe_load(Path("configs/runtime.yaml").read_text())
     raw["unknown_behavior"] = True
@@ -59,17 +67,34 @@ def test_process_lock_competes_and_recovers_after_termination(tmp_path: Path):
     ProjectStore(tmp_path, "p").create()
     context = multiprocessing.get_context("spawn")
     ready, release = context.Event(), context.Event()
-    process = context.Process(target=_hold_lock, args=(str(tmp_path), ready, release))
-    process.start()
+    holder = context.Process(target=_hold_lock, args=(str(tmp_path), ready, release))
+    holder.start()
     assert ready.wait(10)
-    with pytest.raises(ProjectLockError):
-        with ProjectStore(tmp_path, "p").lock():
-            pass
-    process.terminate()
-    process.join(10)
-    with ProjectStore(tmp_path, "p").lock():
-        info = json.loads((tmp_path / "p" / ".lock").read_text())
-        assert info["pid"] == os.getpid()
+
+    competing_results = context.Queue()
+    competitor = context.Process(target=_try_lock, args=(str(tmp_path), competing_results))
+    competitor.start()
+    competitor.join(10)
+    assert competitor.exitcode == 0
+    outcome, competitor_pid = competing_results.get(timeout=2)
+    assert outcome == "blocked"
+    assert competitor_pid != holder.pid
+
+    holder.terminate()
+    holder.join(10)
+    assert not holder.is_alive()
+
+    recovery_results = context.Queue()
+    recovery = context.Process(target=_try_lock, args=(str(tmp_path), recovery_results))
+    recovery.start()
+    recovery.join(10)
+    assert recovery.exitcode == 0
+    outcome, recovery_pid = recovery_results.get(timeout=2)
+    assert outcome == "acquired"
+    assert recovery_pid != holder.pid
+
+    info = json.loads((tmp_path / "p" / ".lock").read_text())
+    assert info["pid"] == recovery_pid
 
 
 def test_previously_unwired_policy_fields_are_enforced(tmp_path: Path) -> None:
