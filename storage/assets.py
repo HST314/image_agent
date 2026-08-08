@@ -67,7 +67,10 @@ def persist_image_asset(response: dict[str, Any], store: ArtifactStore, *,
         "model": str(raw.get("model") or "unknown"),
         "mock": False,
     }
-    saved = store.save_bytes(content, suffix=ALLOWED_TYPES[media_type], metadata=metadata)
+    try:
+        saved = store.save_bytes(content, suffix=ALLOWED_TYPES[media_type], metadata=metadata)
+    except Exception as exc:
+        raise AssetPersistenceError(f"供应商图片写入受控资产库失败：{type(exc).__name__}") from exc
     return {**metadata, **saved, "reference_hash": saved["sha256"]}
 
 

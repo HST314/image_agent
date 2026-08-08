@@ -382,17 +382,11 @@ class WorkflowRunner:
         style_by_index = {card.style_index: card for card in style_cards}
         style_audit: list[dict[str, Any]] = []
 
-        def render(index: int) -> dict[str, Any]:
-            if self.should_cancel():
-                from agent_core.error_taxonomy import JobCancelledError
-                raise JobCancelledError("作业已请求取消，未开始的供应商调用已停止。")
+        def decorate(index: int, slot_key: str, result: dict[str, Any]) -> dict[str, Any]:
             idea = idea_cards[index] if index < len(idea_cards) else None
             if idea is None:
                 raise ValueError(f"候选槽位 {index} 缺少已绑定的 VLM 风格理解。")
             prompt = build_style_candidate_prompt(idea, hard_constraints, category_description)
-            # Scheme B invariant: reference images are VLM-only and never image-provider inputs.
-            slot_key = content_hash(["initial_candidate_generation", spec.content_hash, index, idea.style_index])
-            result = self._image_call("initial_candidate_generation", prompt, [], index=index, idempotency_key=slot_key)
             card = style_by_index[idea.style_index]
             audit = {
                 "slot": index,
@@ -409,8 +403,26 @@ class WorkflowRunner:
             return {**normalize_image_asset(result), "candidate_index": index, "id": f"candidate-{index + 1}",
                     "style_name": idea.title if idea else f"方向 {index + 1}", "style_slot_audit": audit}
 
+        def render(index: int) -> dict[str, Any]:
+            if self.should_cancel():
+                from agent_core.error_taxonomy import JobCancelledError
+                raise JobCancelledError("作业已请求取消，未开始的供应商调用已停止。")
+            idea = idea_cards[index] if index < len(idea_cards) else None
+            if idea is None:
+                raise ValueError(f"候选槽位 {index} 缺少已绑定的 VLM 风格理解。")
+            prompt = build_style_candidate_prompt(idea, hard_constraints, category_description)
+            # Scheme B invariant: reference images are VLM-only and never image-provider inputs.
+            slot_key = content_hash(["initial_candidate_generation", spec.content_hash, index, idea.style_index])
+            result = self._image_call("initial_candidate_generation", prompt, [], index=index, idempotency_key=slot_key)
+            return decorate(index, slot_key, result)
+
+        def recover(index: int, slot_key: str) -> dict[str, Any] | None:
+            result = self._recover_image_call("initial_candidate_generation", slot_key)
+            return decorate(index, slot_key, result) if result is not None else None
+
         batch = CandidateBatchGenerator(self.store, render, attempts=self.policy.max_render_retries + 1,
                                         max_workers=self.policy.candidate_concurrency,
+                                        recover=recover,
                                         should_cancel=self.should_cancel,
                                         on_progress=lambda completed, total: self.progress(completed, total, "candidate")).generate(
                                             spec.content_hash, count=self.policy.candidate_count,
@@ -709,4 +721,14 @@ class WorkflowRunner:
         if call_id:
             self.store.prompts.status(call_id, "ingested", artifact_id=asset["artifact_id"], sha256=asset["sha256"])
             asset["model_call_id"] = call_id
+        return asset
+
+    def _recover_image_call(self, state: str, idempotency_key: str) -> dict[str, Any] | None:
+        pending = self.store.prompts.pending_provider_result(state=state, idempotency_key=idempotency_key)
+        if pending is None:
+            return None
+        call_id, result = pending
+        asset = persist_image_asset(result, self.store.artifacts)
+        self.store.prompts.status(call_id, "ingested", artifact_id=asset["artifact_id"], sha256=asset["sha256"])
+        asset["model_call_id"] = call_id
         return asset

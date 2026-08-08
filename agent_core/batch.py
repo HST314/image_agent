@@ -10,10 +10,12 @@ class PaidAttemptBudgetExceeded(RuntimeError):
 
 class CandidateBatchGenerator:
     def __init__(self, store: ProjectStore, render: Callable[[int], dict[str, Any]], *, attempts: int = 2, max_workers: int = 5,
+                 recover: Callable[[int, str], dict[str, Any] | None] | None = None,
                  should_cancel: Callable[[], bool] | None = None,
                  on_progress: Callable[[int, int], None] | None = None) -> None:
         self.store, self.render, self.attempts = store, render, attempts
         self.max_workers = max(1, min(5, max_workers))
+        self.recover = recover
         self.should_cancel = should_cancel or (lambda: False)
         self.on_progress = on_progress or (lambda _completed, _total: None)
 
@@ -56,6 +58,18 @@ class CandidateBatchGenerator:
                 for attempt in range(prior_started + 1, self.attempts + 1):
                     if self.should_cancel():
                         raise JobCancelledError("作业已请求取消，未开始的供应商调用已停止。")
+                    if self.recover is not None:
+                        try:
+                            recovered = self.recover(index, key)
+                            if recovered is not None:
+                                self.store.events.append("candidate_succeeded", index=index, attempt=prior_started,
+                                                         asset=recovered, idempotency_key=key, recovered=True)
+                                return recovered, None
+                        except Exception as exc:
+                            record = error_record(exc, stage="asset_ingestion_recovery", slot=index)
+                            self.store.events.append("candidate_ingestion_failed", index=index, attempt=prior_started,
+                                                     error=record, idempotency_key=key)
+                            return None, {"index": index, "error": record, "idempotency_key": key}
                     try:
                         self.store.events.append("candidate_attempt_started", index=index, attempt=attempt,
                                                  idempotency_key=key)

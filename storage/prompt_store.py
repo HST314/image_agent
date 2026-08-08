@@ -15,6 +15,12 @@ from storage.project_store import FORMAT_VERSION, ImmutableRecordError, content_
 from storage import file_lock
 
 
+class CompletedProviderResultError(RuntimeError):
+    """A paid provider result exists but cannot currently be ingested."""
+
+    category = "asset_ingestion"
+
+
 class PromptStore:
     """Durable model calls.  The historical name remains API-compatible."""
 
@@ -148,6 +154,28 @@ class PromptStore:
 
     def detail(self, call_id: str) -> dict[str, Any]:
         return self._redact(self.get(call_id))
+
+    def pending_provider_result(self, *, state: str, idempotency_key: str) -> tuple[str, dict[str, Any]] | None:
+        """Return a completed image result that has not reached ingestion."""
+        starts = [item for item in self._all()
+                  if item.get("event_kind") == "call_started"
+                  and item.get("state") == state
+                  and (item.get("variables") or {}).get("idempotency_key") == idempotency_key]
+        starts.sort(key=lambda item: (item.get("created_at", ""), item.get("call_id", "")), reverse=True)
+        for start in starts:
+            call_id = start["call_id"]
+            call = self.get(call_id)
+            statuses = {item["status"] for item in call["status_events"]}
+            if "ingested" in statuses or "provider_completed" not in statuses:
+                continue
+            result = call.get("output_raw")
+            if not isinstance(result, dict):
+                raise CompletedProviderResultError("已完成供应商结果缺少可恢复的结构化响应，禁止再次付费。")
+            uri = result.get("url") or result.get("uri")
+            if not isinstance(uri, str) or not uri.startswith(("https://", "http://")):
+                raise CompletedProviderResultError("已完成供应商结果的下载引用不可恢复，禁止再次付费。")
+            return call_id, dict(result)
+        return None
 
     def _append_event(self, call_id: str, kind: str, **payload: Any) -> None:
         if not self._events(call_id):
