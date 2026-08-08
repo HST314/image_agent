@@ -210,6 +210,8 @@ self_check:
 - `clarification_total_budget: 10`：跨轮澄清总预算。
 - `max_auto_questions: 3`：单轮自动问题上限。
 - `max_clarify_rounds: 3`：最多澄清轮次。
+- `approval_required` 必须为 `true`；关闭它与服务端强制确认门禁冲突，配置加载会拒绝启动。
+- `image_api_base_url` 为空时使用受支持供应商默认地址；非空时必须是有效 HTTP(S) 地址并传给图片客户端。
 - `max_render_retries: 2`、`max_calibration_retries: 3`：调用重试预算。
 - `default_output_size: "1024x1024"`、`response_format: "url"`、`watermark: false`：图片请求默认值。
 

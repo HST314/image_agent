@@ -110,6 +110,7 @@ class WorkflowRunner:
         task = ImageTaskCard.model_validate(data["task_card"])
         fingerprints = set(data.get("previous_fingerprints", []))
         already_asked = int(data.get("clarification_asked_count", 0))
+        rounds = int(data.get("clarification_round_count", 0))
         if data.get("phase") == "waiting_clarification":
             answers = options.get("clarification_answers")
             if not answers: return {"waiting": True, "phase": "waiting_clarification"}
@@ -117,6 +118,12 @@ class WorkflowRunner:
             task = task.model_copy(update={"known_facts": facts, "unknowns": {k:v for k,v in task.unknowns.items() if k not in answers}})
             return {"task_card": task.model_dump(mode="json"), "clarification_answers": answers, "waiting": False, "phase": "clarification_completed",
                     "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
+                    "clarification_round_count": rounds,
+                    "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
+        if rounds >= self.policy.max_clarify_rounds:
+            return {"waiting": False, "phase": "clarification_round_limit_reached",
+                    "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
+                    "clarification_round_count": rounds,
                     "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
         if self.offline_mode:
             card = generate_question_card(task, previous_fingerprints=fingerprints, already_asked=already_asked)
@@ -134,9 +141,11 @@ class WorkflowRunner:
             asked = already_asked + len(card.questions)
             return {"question_card": card.model_dump(mode="json"), "waiting": True, "phase": "waiting_clarification",
                     "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": asked,
+                    "clarification_round_count": rounds + 1,
                     "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - asked)}
         return {"question_card": card.model_dump(mode="json"), "waiting": False,
                 "previous_fingerprints": sorted(fingerprints), "clarification_asked_count": already_asked,
+                "clarification_round_count": rounds,
                 "clarification_remaining_budget": max(0, self.policy.clarification_total_budget - already_asked)}
 
     def _confirmation(self, data: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
@@ -174,11 +183,13 @@ class WorkflowRunner:
         try:
             from skills.category_library_adapter import CategoryLibraryAdapter
             lib_path = Path(__file__).parent.parent / "skills/category_libraries/advertising_category_library_v2.json"
-            if lib_path.exists():
-                adapter = CategoryLibraryAdapter(lib_path)
-                match = adapter.load_for_task(task_card)
-                if match:
-                    category_skill = match.skill
+            if not lib_path.is_file():
+                raise FileNotFoundError(f"品类 Skill 库不存在：{lib_path.name}")
+            adapter = CategoryLibraryAdapter(lib_path)
+            match = adapter.load_for_task(task_card)
+            if not match:
+                raise LookupError(f"品类 {task_card.category_ref.category_id} 无匹配 Skill")
+            category_skill = match.skill
         except Exception as exc:
             self._handle_skill_failure("category_library", exc, degraded_reasons)
 
@@ -353,7 +364,8 @@ class WorkflowRunner:
                 template_id=state, template_version="2", input_refs=references, needs_images=len(references))
             return normalize_image_asset(result)
         result = self.gateway.call(state, ModelRole.TEXT_TO_IMAGE_MODEL,
-            lambda route: ArkImageRenderClient(model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
+            lambda route: ArkImageRenderClient(base_url=self.policy.image_api_base_url or None,
+                model=route.binding.model).render(build_render_payload(route.binding.model, prompt,
                 self.policy.default_output_size, {"state":state},
                 response_format=self.policy.response_format, watermark=self.policy.watermark, reference_images=references)),
             messages=[{"role":"user","content":prompt}], variables={"candidate_index":index, "reference_images":references},

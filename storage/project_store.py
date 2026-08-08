@@ -223,10 +223,14 @@ class ProjectStore:
         self._lock_guard = threading.RLock()
         self._lock_descriptor: int | None = None
 
-    def create(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
-        if self.root.exists() and any(self.root.iterdir()):
-            raise ProjectExistsError("工程已存在；请使用 resume、retry 或 rewind，禁止重复 new。")
-        self.root.mkdir(parents=True, exist_ok=False)
+    def create(self, config: dict[str, Any] | None = None,
+               recovery_claim: tuple[str, str] | None = None) -> dict[str, Any]:
+        if self.root.exists():
+            if recovery_claim is None:
+                raise ProjectExistsError("工程已存在；请使用 resume、retry 或 rewind，禁止重复 new。")
+            self._assert_empty_directory_owned_by_claim(*recovery_claim)
+        else:
+            self.root.mkdir(parents=True, exist_ok=False)
         manifest = {"format_version": FORMAT_VERSION, "project_id": self.project_id, "current_branch": "main", "current_checkpoint": None, "failed_step": None, "created_at": _now(), "updated_at": _now()}
         atomic_json(self.root / "manifest.json", manifest)
         if config is None:
@@ -236,6 +240,27 @@ class ProjectStore:
         atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "branches": {"main": {"parent": None, "from_checkpoint": None, "created_at": _now()}}})
         self.events.append("project_created", branch="main")
         return manifest
+
+    def _assert_empty_directory_owned_by_claim(self, key: str, raw_hash: str) -> None:
+        """Allow takeover only for this live claim's empty pre-manifest directory."""
+        projects_root = self.root.parent
+        descriptor = os.open(projects_root / ".design-task-idempotency.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            registry_path = projects_root / ".design-task-idempotency.json"
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            record = registry.get(key)
+            if (not record or record.get("raw_hash") != raw_hash
+                    or record.get("project_id") != self.project_id
+                    or record.get("status") != "pending"
+                    or record.get("owner_pid") != os.getpid()
+                    or record.get("owner_start") != _process_start_time(os.getpid())):
+                raise ProjectExistsError("残留目录不属于当前幂等登记，拒绝接管。")
+            if (self.root / "manifest.json").exists() or any(self.root.iterdir()):
+                raise ProjectExistsError("残留目录包含工程或未知数据，拒绝接管。")
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
     @classmethod
     def claim_design_task(cls, projects_root: str | Path, project_id: str, key: str, raw_hash: str) -> tuple[str, bool]:
@@ -252,10 +277,56 @@ class ProjectStore:
             if existing:
                 if existing.get("raw_hash") != raw_hash:
                     raise ValueError("同一幂等键不能提交不同的原始任务。")
-                return str(existing["project_id"]), False
-            registry[key] = {"project_id": project_id, "raw_hash": raw_hash, "claimed_at": _now()}
+                canonical = str(existing["project_id"])
+                manifest_exists = (root / canonical / "manifest.json").is_file()
+                owner_alive = _same_process(existing.get("owner_pid"), existing.get("owner_start"))
+                if existing.get("status") == "committed" or manifest_exists:
+                    return canonical, False
+                if existing.get("status") == "pending" and owner_alive:
+                    return canonical, False
+                existing.update(status="pending", owner_pid=os.getpid(),
+                                owner_start=_process_start_time(os.getpid()), claimed_at=_now())
+                atomic_json(registry_path, registry)
+                return canonical, True
+            if any(
+                record.get("project_id") == project_id
+                for registered_key, record in registry.items()
+                if registered_key != key
+            ):
+                raise ProjectExistsError("工程目录已绑定其他幂等登记，拒绝接管。")
+            registry[key] = {"project_id": project_id, "raw_hash": raw_hash, "status": "pending",
+                             "owner_pid": os.getpid(), "owner_start": _process_start_time(os.getpid()),
+                             "claimed_at": _now()}
             atomic_json(registry_path, registry)
             return project_id, True
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    @classmethod
+    def finish_design_task(cls, projects_root: str | Path, key: str, raw_hash: str, project_id: str) -> None:
+        cls._set_design_task_claim_status(projects_root, key, raw_hash, project_id, "committed")
+
+    @classmethod
+    def abandon_design_task(cls, projects_root: str | Path, key: str, raw_hash: str, project_id: str) -> None:
+        cls._set_design_task_claim_status(projects_root, key, raw_hash, project_id, "abandoned")
+
+    @classmethod
+    def _set_design_task_claim_status(cls, projects_root: str | Path, key: str, raw_hash: str,
+                                      project_id: str, status: str) -> None:
+        root = Path(projects_root)
+        descriptor = os.open(root / ".design-task-idempotency.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            path = root / ".design-task-idempotency.json"
+            registry = json.loads(path.read_text(encoding="utf-8"))
+            record = registry.get(key)
+            if (not record or record.get("raw_hash") != raw_hash
+                    or record.get("project_id") != project_id):
+                raise ValueError("幂等登记与待更新任务不一致。")
+            record["status"] = status
+            record[f"{status}_at"] = _now()
+            atomic_json(path, registry)
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
@@ -383,3 +454,10 @@ def _process_start_time(pid: int) -> str:
         return Path(f"/proc/{pid}/stat").read_text().split()[21]
     except (OSError, IndexError):
         return "unknown"
+
+
+def _same_process(pid: Any, start: Any) -> bool:
+    if not isinstance(pid, int) or not isinstance(start, str):
+        return False
+    actual = _process_start_time(pid)
+    return actual != "unknown" and actual == start
