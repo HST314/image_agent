@@ -201,11 +201,14 @@ class WorkflowRunner:
         try:
             style_path = Path(__file__).parent.parent / "skills/style_cards/index.json"
             if style_path.exists():
-                style_cards = StyleCardLoader(style_path).select_distinct(count=self.policy.candidate_count)
+                task_text = " ".join([task_card.deliverable_goal, task_card.usage_context, *map(str, task_card.known_facts.values())])
+                style_cards = StyleCardLoader(style_path).select_distinct(count=self.policy.candidate_count, task_text=task_text)
             if len(style_cards) != self.policy.candidate_count:
                 raise ValueError("风格库未返回策略要求数量的已批准风格卡。")
         except Exception as exc:
-            self._handle_skill_failure("style_library", exc, degraded_reasons)
+            reason = {"skill": "style_library", "code": type(exc).__name__, "message": str(exc)}
+            self.store.events.append("skill_load_blocked", **reason, retryable=True)
+            raise SkillLoadError(f"必需 Skill style_library 加载失败：{exc}") from exc
 
         # 使用 StyleIdeaGenerator 生成包含【构图、材质、推荐理由、主要风险】的文本卡片
         from interaction.approval_gate import TaskConfirmationDoc
@@ -221,6 +224,8 @@ class WorkflowRunner:
             self.output(f"  • 构图机制：{idea.composition}")
             self.output(f"  • 材质语言：{idea.material}")
             self.output(f"  • 推荐理由：{idea.fit_reason}")
+            self.output(f"  • 艺术理念：{idea.artistic_philosophy}")
+            self.output(f"  • 可借鉴机制：{idea.adaptable_mechanism}")
             self.output(f"  • 主要风险：{idea.major_risk}")
         self.output("\n=================================================================")
         self.output("保持主体内容、品牌色彩与空间条件一致，正在按上述 5 种风格分别生图，请稍候...\n")

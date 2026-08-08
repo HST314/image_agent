@@ -1,9 +1,11 @@
 {
   "style_id": "style_editorial_flow",
+  "style_index": "STYLE-003",
   "version": "1.0",
   "style_name": "编辑式动线",
+  "summary": "以非对称编辑动线引导顺序阅读，兼顾叙事节奏与信息分组。",
   "tags": ["叙事", "易扫读"],
-  "best_for": ["顺序阅读", "决策审核"],
+  "best_for": ["海报", "顺序阅读", "决策审核"],
   "avoid_for": ["严格对称"],
   "composition": "非对称阅读路径，并配合分组信息区域",
   "visual_language": {
@@ -16,5 +18,6 @@
   "risk_notes": ["需要谨慎控制间距，避免信息过载。"],
   "negative_elements": ["随机装饰", "编造文案"],
   "reference_assets": [],
+  "reference_image": {"path": "references/editorial_flow.svg", "sha256": "ab04caf4eb46e9e58c840179cf4dd8a8808ce3c4ac18454d61257b859b0b285a"},
   "status": "approved"
 }

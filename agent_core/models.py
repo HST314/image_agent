@@ -308,10 +308,13 @@ class StyleIdeaCard(StrictBaseModel):
     idea_id: str = Field(default_factory=lambda: new_id("style_idea"))
     task_id: str
     source_style_id: str
+    style_index: str
     title: str
     composition: str
     material: str
     fit_reason: str
+    artistic_philosophy: str
+    adaptable_mechanism: str
     major_risk: str
     prompt_supplement: str
     reference_asset: str | None = None
@@ -368,20 +371,30 @@ class VisualLanguage(StrictBaseModel):
     scheme: str | None = None
 
 
+class StyleReferenceImage(StrictBaseModel):
+    """Immutable repository-owned reference image for a style Skill entry."""
+
+    path: str = Field(pattern=r"^references/[A-Za-z0-9._-]+\.(svg|png|jpg|jpeg|webp)$")
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class StyleCard(StrictBaseModel):
     """Generic runtime-loaded style card."""
 
     style_id: str
+    style_index: str = Field(pattern=r"^[A-Z0-9_-]+$")
     version: str
-    style_name: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    best_for: list[str] = Field(default_factory=list)
-    avoid_for: list[str] = Field(default_factory=list)
+    style_name: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    tags: list[str] = Field(min_length=1)
+    best_for: list[str] = Field(min_length=1)
+    avoid_for: list[str] = Field(min_length=1)
     composition: str
     visual_language: VisualLanguage
-    risk_notes: list[str] = Field(default_factory=list)
+    risk_notes: list[str] = Field(min_length=1)
     negative_elements: list[str] = Field(default_factory=list)
     reference_assets: list[str] = Field(default_factory=list)
+    reference_image: StyleReferenceImage
     status: SkillStatus
 
 

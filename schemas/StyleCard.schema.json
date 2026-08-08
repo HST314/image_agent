@@ -2,14 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "StyleCard",
   "type": "object",
-  "required": ["style_id", "version", "composition", "visual_language", "negative_elements", "status"],
+  "required": ["style_id", "style_index", "version", "style_name", "summary", "tags", "best_for", "avoid_for", "composition", "visual_language", "risk_notes", "negative_elements", "reference_image", "status"],
   "properties": {
     "style_id": { "type": "string" },
+    "style_index": { "type": "string", "pattern": "^[A-Z0-9_-]+$" },
     "version": { "type": "string" },
     "style_name": { "type": "string" },
-    "tags": { "type": "array", "items": { "type": "string" } },
-    "best_for": { "type": "array", "items": { "type": "string" } },
-    "avoid_for": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "string", "minLength": 1 },
+    "tags": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "best_for": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "avoid_for": { "type": "array", "minItems": 1, "items": { "type": "string" } },
     "composition": { "type": "string" },
     "visual_language": {
       "type": "object",
@@ -21,9 +23,18 @@
         "scheme": { "type": "string" }
       }
     },
-    "risk_notes": { "type": "array", "items": { "type": "string" } },
+    "risk_notes": { "type": "array", "minItems": 1, "items": { "type": "string" } },
     "negative_elements": { "type": "array", "items": { "type": "string" } },
     "reference_assets": { "type": "array", "items": { "type": "string" } },
+    "reference_image": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^references/[A-Za-z0-9._-]+\\.(svg|png|jpg|jpeg|webp)$" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
     "status": { "type": "string", "enum": ["candidate", "approved", "deprecated"] }
   }
 }

@@ -1,9 +1,11 @@
 {
   "style_id": "style_composed_grid",
+  "style_index": "STYLE-001",
   "version": "1.0",
   "style_name": "编排网格",
+  "summary": "以模块化网格组织复杂信息，强调秩序、层级与可审核性。",
   "tags": ["结构化", "均衡"],
-  "best_for": ["对比", "审核"],
+  "best_for": ["海报", "对比", "审核"],
   "avoid_for": ["单焦点强表现"],
   "composition": "有序模块化网格，并具备清晰层级",
   "visual_language": {
@@ -16,5 +18,6 @@
   "risk_notes": ["如果层级较弱，画面可能显得过于静态。"],
   "negative_elements": ["视觉杂乱", "未验证标签"],
   "reference_assets": [],
+  "reference_image": {"path": "references/composed_grid.svg", "sha256": "aa16ee802b309cc861e66f6f6af12fcd8cc3d8c007b478e656f190061b5034a4"},
   "status": "approved"
 }
