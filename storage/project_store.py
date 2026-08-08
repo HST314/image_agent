@@ -90,22 +90,27 @@ class EventStore:
         with self._guards_guard:
             guard = self._guards.setdefault(key, threading.Lock())
         with guard:
-            # file_lock wraps integer descriptors as ``r+b`` for Windows.
-            # Keep the production descriptor compatible with that contract.
-            descriptor = os.open(self.path, os.O_APPEND | os.O_CREAT | os.O_RDWR, 0o600)
-            try:
-                file_lock.lock(descriptor, file_lock.LOCK_EX)
-                existing = self.read_all()
-                event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex,
-                         "sequence": int(existing[-1].get("sequence", len(existing))) + 1 if existing else 1,
-                         "timestamp": _now(), "type": event_type, **payload}
-                encoded = (json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode()
-                if os.write(descriptor, encoded) != len(encoded):
-                    raise OSError("事件日志写入不完整")
-                os.fsync(descriptor)
-            finally:
-                file_lock.unlock(descriptor)
-                os.close(descriptor)
+            # Pass portalocker the stream it locks.  Re-wrapping an O_APPEND
+            # descriptor is rejected by the Windows backend on some Python /
+            # pywin32 combinations.
+            with self.path.open("a+b") as stream:
+                locked = False
+                try:
+                    file_lock.lock(stream, file_lock.LOCK_EX)
+                    locked = True
+                    stream.seek(0, os.SEEK_END)
+                    existing = self.read_all()
+                    event = {"format_version": FORMAT_VERSION, "event_id": uuid4().hex,
+                             "sequence": int(existing[-1].get("sequence", len(existing))) + 1 if existing else 1,
+                             "timestamp": _now(), "type": event_type, **payload}
+                    encoded = (json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n").encode()
+                    if stream.write(encoded) != len(encoded):
+                        raise OSError("事件日志写入不完整")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                finally:
+                    if locked:
+                        file_lock.unlock(stream)
         return event
 
     def read_all(self) -> list[dict[str, Any]]:
@@ -355,7 +360,14 @@ class ProjectStore:
             config = {"runtime_policy": RuntimePolicy.from_file(Path("configs/runtime.yaml")).snapshot("offline")}
         atomic_json(self.root / "project.yaml", config)
         atomic_json(self.root / "branches.json", {"format_version": FORMAT_VERSION, "version": 1, "branches": {"main": {"branch_id": branch_id, "name": "main", "parent_branch_id": None, "fork_checkpoint": None, "created_by": "system", "created_at": _now(), "head": None, "status": "active", "version": 1}}})
-        self.events.append("project_created", branch="main")
+        try:
+            self.events.append("project_created", branch="main")
+        except Exception:
+            # A project does not exist until its creation event is durable.
+            # Everything below root was created by this method (or was an
+            # explicitly claimed empty directory), so remove the half-project.
+            shutil.rmtree(self.root)
+            raise
         return manifest
 
     def _assert_empty_directory_owned_by_claim(self, key: str, raw_hash: str) -> None:

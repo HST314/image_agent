@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from storage import file_lock
 from storage.project_store import ProjectStore
 
@@ -30,22 +32,46 @@ def test_portalocker_facade_accepts_existing_descriptors(tmp_path: Path) -> None
         os.close(descriptor)
 
 
-def test_project_create_uses_lock_compatible_event_descriptor(tmp_path: Path, monkeypatch) -> None:
-    modes: list[int] = []
-    original_open = os.open
+def test_project_create_locks_a_binary_stream_and_writes_first_event(tmp_path: Path, monkeypatch) -> None:
+    locked_streams = []
+    original_lock = file_lock.lock
 
-    def recording_open(path, flags, mode=0o777):
-        if Path(path).name == "events.jsonl":
-            modes.append(flags)
-        return original_open(path, flags, mode)
+    def recording_lock(target, flags):
+        if getattr(target, "name", "").endswith("events.jsonl"):
+            locked_streams.append(target)
+            assert not target.closed
+            assert target.readable() and target.writable()
+        return original_lock(target, flags)
 
-    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(file_lock, "lock", recording_lock)
     store = ProjectStore(tmp_path, "production-event-mode")
     store.create()
 
-    assert modes and modes[0] & os.O_RDWR
-    assert not modes[0] & os.O_WRONLY
-    assert [event["type"] for event in store.events.read_all()] == ["project_created"]
+    events = store.events.read_all()
+    assert len(locked_streams) == 1
+    assert [(event["sequence"], event["type"]) for event in events] == [(1, "project_created")]
+    assert (store.root / "events/events.jsonl").stat().st_size > 0
+
+
+def test_project_create_lock_failure_preserves_error_and_removes_partial_project(tmp_path: Path, monkeypatch) -> None:
+    unlock_called = False
+
+    def deny_lock(target, flags):
+        raise PermissionError(13, "Permission denied")
+
+    def recording_unlock(target):
+        nonlocal unlock_called
+        unlock_called = True
+
+    monkeypatch.setattr(file_lock, "lock", deny_lock)
+    monkeypatch.setattr(file_lock, "unlock", recording_unlock)
+    store = ProjectStore(tmp_path, "failed-create")
+
+    with pytest.raises(PermissionError, match="Permission denied"):
+        store.create()
+
+    assert unlock_called is False
+    assert not store.root.exists()
 
 
 def test_all_declared_reference_hashes_match_byte_exact_assets() -> None:

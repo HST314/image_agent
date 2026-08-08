@@ -59,6 +59,16 @@ def test_cli_does_not_claim_an_error_was_recorded_when_event_append_fails(tmp_pa
     assert "可使用 --debug 查看详细错误" in output
 
 
+def test_cli_debug_prints_traceback_for_project_creation_failure(tmp_path: Path, capsys, monkeypatch):
+    task = tmp_path / "task.json"; task.write_text(json.dumps(task_payload()), encoding="utf-8")
+    monkeypatch.setattr(ProjectStore, "create", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError(13, "Permission denied")))
+
+    assert main(["--projects-root", str(tmp_path / "projects"), "--debug", "new", "broken", "--task", str(task)]) == 2
+    captured = capsys.readouterr()
+    assert "Traceback (most recent call last)" in captured.err
+    assert "PermissionError: [Errno 13] Permission denied" in captured.err
+
+
 def test_retry_calls_real_failed_handler_on_new_branch(tmp_path: Path):
     store = ProjectStore(tmp_path, "p"); store.create(); store.checkpoint("confirmation_build", {"state":"confirmation_build"})
     store.fail_step("initial_candidate_generation", {"message":"provider"})

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import traceback
 from pathlib import Path
 from typing import Sequence
 
@@ -117,6 +118,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "inspect": print(view.technical(store.manifest()))
         return 0
     except Exception as exc:
+        if args.debug:
+            traceback.print_exc()
         message = str(exc) if args.debug else "流程未完成；可使用 --debug 查看详细错误。"
         print(f"{message}\n若工程已成功创建，可修正后使用 resume 或 retry。")
         return 2
