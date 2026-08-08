@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "RuntimeSettings.v1",
+  "type": "object",
+  "required": ["schema_version", "version", "sha256", "fields"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "fields": {"type": "array", "items": {"type": "object", "required": ["key", "scope", "risk", "role", "effective_when", "sensitive", "default", "value", "schema"], "properties": {
+      "key": {"type": "string"}, "scope": {"enum": ["new_job", "new_project"]},
+      "risk": {"enum": ["low", "medium", "high", "critical"]}, "role": {"enum": ["operator", "admin"]},
+      "effective_when": {"enum": ["new_job", "new_project"]}, "sensitive": {"type": "boolean"},
+      "default": {}, "value": {}, "secret_state": {"type": ["string", "null"]}, "help": {"type": "string"}, "schema": {"type": "object"}
+    }, "additionalProperties": false}}
+  },
+  "additionalProperties": false
+}

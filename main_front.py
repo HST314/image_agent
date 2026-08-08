@@ -23,6 +23,7 @@ from agent_core.workflow_runner import RunnerOptions, WorkflowRunner
 from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore, content_hash
 from configs.runtime_policy import RuntimePolicy
+from configs.runtime_settings import RuntimeSettingsStore, SettingsConflict, SettingsForbidden
 from agent_core.jobs import JobStore, WorkflowJobWorker
 from agent_core.guided_edit import GuidedEditRequest
 from agent_core.delivery import DeliveryService
@@ -98,11 +99,29 @@ class BranchSwitchRequest(StrictRequest):
 class HistoryReopenPreviewRequest(StrictRequest):
     name: str | None = Field(default=None, min_length=2, max_length=64)
 
+class RuntimeSettingsUpdateRequest(StrictRequest):
+    expected_version: int = Field(ge=1)
+    changes: dict[str, Any] = Field(min_length=1, max_length=32)
+    actor: str = Field(min_length=1, max_length=256)
+    dangerous_confirmed: bool = False
+
+class BranchSettingsApplyRequest(BranchRequest):
+    settings_version: int = Field(ge=1)
+
 
 def _trace_detail_allowed(request: Request, project_id: str) -> bool:
     """Explicit host authorization hook; secure default is deny."""
     authorizer = getattr(app.state, "model_call_detail_authorizer", None)
     return bool(authorizer and authorizer(request, project_id))
+
+def _settings_role(request: Request) -> str:
+    """Host-injected RBAC; secure default permits reads but no writes."""
+    authorizer = getattr(app.state, "runtime_settings_authorizer", None)
+    role = authorizer(request) if authorizer else None
+    return role if role in {"operator", "admin"} else "reader"
+
+def _settings_store() -> RuntimeSettingsStore:
+    return RuntimeSettingsStore(PROJECTS_ROOT, RuntimePolicy.from_file(RUNTIME_CONFIG))
 
 
 def _translate_model_call_error(exc: Exception) -> HTTPException:
@@ -139,10 +158,11 @@ def _store(project_id: str) -> ProjectStore:
     return ProjectStore(PROJECTS_ROOT, _safe_project_id(project_id))
 
 
-def _runner(store: ProjectStore, offline: bool) -> WorkflowRunner:
+def _runner(store: ProjectStore, offline: bool, runtime_policy: RuntimePolicy | None = None) -> WorkflowRunner:
     if not MODEL_CONFIG.is_file():
         raise RuntimeError("模型配置文件不存在，请设置 IMAGE_AGENT_MODEL_CONFIG。")
-    return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline, runtime_policy=RuntimePolicy.from_file(RUNTIME_CONFIG))
+    policy = runtime_policy or RuntimePolicy.model_validate(store.runtime_snapshot()["policy"])
+    return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline, runtime_policy=policy)
 
 
 def _options(body: AdvanceRequest) -> RunnerOptions:
@@ -220,7 +240,9 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
         snapshot = store.resume()
         if snapshot is None:
             raise ValueError("工程还没有可恢复节点。")
-        runner = _runner(store, payload["mode"] == "offline")
+        frozen_settings = payload.get("runtime_settings") or store.runtime_snapshot()
+        runner = _runner(store, payload["mode"] == "offline",
+                         RuntimePolicy.model_validate(frozen_settings["policy"]))
         runner.should_cancel = lambda: jobs.cancellation_requested(job["job_id"])
         runner.progress = lambda completed, total, unit: jobs.heartbeat(
             job["job_id"], completed=completed, total=total, unit=unit
@@ -274,6 +296,10 @@ def _translate_error(exc: Exception) -> HTTPException:
         return exc
     if isinstance(exc, ValidationError):
         return HTTPException(status_code=422, detail=exc.errors(include_url=False))
+    if isinstance(exc, SettingsForbidden):
+        return HTTPException(status_code=403, detail={"code": "SETTINGS_FORBIDDEN", "message": str(exc)})
+    if isinstance(exc, SettingsConflict):
+        return HTTPException(status_code=409, detail={"code": "SETTINGS_VERSION_CONFLICT", "message": str(exc)})
     if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
         return HTTPException(status_code=404, detail="工程或资源不存在。")
     if isinstance(exc, FileExistsError):
@@ -311,6 +337,60 @@ async def health() -> dict[str, Any]:
         "status": "ok",
         "model_config_available": MODEL_CONFIG.is_file(),
     }
+
+@app.get("/api/runtime-settings")
+async def list_runtime_settings() -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(_settings_store().describe)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={"code": "SETTINGS_UNAVAILABLE", "message": "运行时设置暂不可读取。"}) from exc
+
+@app.get("/api/runtime-settings/{key}")
+async def get_runtime_setting(key: str) -> dict[str, Any]:
+    result = await list_runtime_settings()
+    field = next((item for item in result["fields"] if item["key"] == key), None)
+    if field is None:
+        raise HTTPException(status_code=404, detail={"code": "SETTING_NOT_FOUND", "message": "设置不存在。"})
+    return {"schema_version": result["schema_version"], "version": result["version"],
+            "sha256": result["sha256"], "field": field}
+
+@app.patch("/api/runtime-settings")
+async def update_runtime_settings(body: RuntimeSettingsUpdateRequest, request: Request) -> dict[str, Any]:
+    try:
+        role = _settings_role(request)
+        if role == "reader": raise SettingsForbidden("当前主体没有设置写权限。")
+        return await asyncio.to_thread(_settings_store().update, body.changes,
+            expected_version=body.expected_version, actor=body.actor, role=role,
+            dangerous_confirmed=body.dangerous_confirmed)
+    except Exception as exc:
+        if isinstance(exc, ValidationError):
+            raise HTTPException(status_code=422, detail={"code": "SETTINGS_VALIDATION_FAILED",
+                                "message": str(exc)}) from exc
+        translated = _translate_error(exc)
+        if translated.status_code == 409 and not isinstance(exc, SettingsConflict):
+            translated.status_code = 422
+            translated.detail = {"code": "SETTINGS_VALIDATION_FAILED", "message": str(exc)}
+        raise translated from exc
+
+@app.post("/api/projects/{project_id}/branches/apply-runtime-settings")
+async def apply_runtime_settings_to_new_branch(project_id: str, body: BranchSettingsApplyRequest,
+                                                request: Request) -> dict[str, Any]:
+    """Explicitly fork before applying project-level settings; mode is never part of this DTO."""
+    try:
+        role = _settings_role(request)
+        if role != "admin": raise SettingsForbidden("只有管理员可把项目级设置应用到新分支。")
+        current = _settings_store().snapshot()
+        if current["version"] != body.settings_version: raise SettingsConflict("设置版本冲突，请刷新后重试。")
+        store = _store(project_id)
+        before_project = (store.root / "project.yaml").read_bytes()
+        branch = await asyncio.to_thread(store.branch_from, body.checkpoint, name=body.name,
+            actor=body.actor, expected_version=body.expected_version, runtime_settings=current)
+        if (store.root / "project.yaml").read_bytes() != before_project:
+            raise RuntimeError("项目不可变运行模式快照被意外修改。")
+        return {"branch": branch, "runtime_settings_version": current["version"],
+                "runtime_settings_sha256": current["sha256"], "branches": store.list_branches()}
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
 @app.get("/api/projects")
@@ -360,7 +440,7 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
             store = _store(claimed_project)
             try:
                 claimed_task = task if task.project_id == claimed_project else task.model_copy(update={"project_id": claimed_project})
-                policy = RuntimePolicy.from_file(RUNTIME_CONFIG)
+                policy = RuntimePolicy.model_validate(_settings_store().snapshot()["policy"])
                 metadata = {"runtime_policy": policy.snapshot("offline" if body.offline else "real")}
                 if envelope:
                     metadata.update({"design_task_schema_version": envelope.schema_version,
@@ -434,7 +514,9 @@ async def advance_project(project_id: str, body: AdvanceRequest) -> dict[str, An
         options = body.model_dump(mode="json")
         supplied_key = options.pop("idempotency_key", None)
         key = supplied_key or content_hash([store.manifest()["current_checkpoint"], options])
-        job, created = _job_store(project_id).create(key, {"options": options, "mode": mode})
+        settings = _settings_store().snapshot()
+        jobs = JobStore(store.root, max_attempts=int(settings["policy"]["max_render_retries"]) + 1)
+        job, created = jobs.create(key, {"options": options, "mode": mode, "runtime_settings": settings})
         if created:
             store.events.append("job_queued", job_id=job["job_id"], idempotency_key=key)
         JOB_WORKER.submit(project_id, job["job_id"])
