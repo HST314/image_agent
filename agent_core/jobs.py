@@ -173,6 +173,13 @@ class JobStore:
             return result
         return self._locked(mutate)
 
+    def active(self) -> list[dict[str, Any]]:
+        """Return jobs which make moving the project's execution head unsafe."""
+        def mutate(data: dict[str, Any]) -> list[dict[str, Any]]:
+            return [dict(job) for job in data["jobs"].values()
+                    if job.get("status") in {"queued", "running", "cancel_requested"}]
+        return self._locked(mutate)
+
 
 class WorkflowJobWorker:
     def __init__(self, execute: Callable[[str, dict[str, Any]], None], *, workers: int = 2) -> None:

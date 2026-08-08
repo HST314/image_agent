@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ProjectHistory.v1.schema.json",
+  "title": "Project history read models",
+  "type": "object",
+  "required": ["schema_version", "project_id", "items", "next_cursor"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "project_id": {"type": "string"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/summary"}},
+    "next_cursor": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "required": ["node_id", "checkpoint", "availability"],
+      "properties": {
+        "node_id": {"pattern": "^history_[a-f0-9]{32}$"},
+        "checkpoint": {"type": "string"},
+        "availability": {"enum": ["available", "missing", "migration_failed"]},
+        "error": {"type": ["string", "null"]},
+        "branch": {"type": "string"}, "sequence": {"type": "integer"},
+        "state": {"type": "string"}, "checksum": {"type": "string"},
+        "summary": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

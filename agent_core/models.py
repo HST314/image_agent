@@ -564,6 +564,7 @@ class VisualCheckResult(StrictBaseModel):
     preserve: list[str] = Field(default_factory=list)
     stop_reason: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    model_call_id: str | None = None
 
 
 class VisualInspectionOutput(StrictBaseModel):
@@ -574,6 +575,7 @@ class VisualInspectionOutput(StrictBaseModel):
     deviations: list[str]
     rework_prompt_delta: str
     confidence: float = Field(ge=0.0, le=1.0)
+    model_call_id: str | None = None
 
     @model_validator(mode="after")
     def decision_matches_passed(self) -> "VisualInspectionOutput":

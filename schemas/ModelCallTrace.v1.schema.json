@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ModelCallTrace.v1",
+  "title": "ModelCallTrace v1",
+  "type": "object",
+  "required": ["call_id", "capability", "call_type", "status", "started_at", "model", "template", "config_hash", "input_asset_hashes"],
+  "properties": {
+    "call_id": {"type": "string", "pattern": "^call_[a-f0-9]{32}$"},
+    "parent_call_id": {"type": ["string", "null"], "pattern": "^call_[a-f0-9]{32}$"},
+    "capability": {"type": "string"},
+    "call_type": {"enum": ["text", "image"]},
+    "status": {"enum": ["running", "completed", "failed"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": ["string", "null"], "format": "date-time"},
+    "duration_ms": {"type": ["integer", "null"], "minimum": 0},
+    "model": {"type": "object", "required": ["provider", "name"], "properties": {"provider": {"type": ["string", "null"]}, "name": {"type": ["string", "null"]}, "version": {"type": ["string", "null"]}}, "additionalProperties": false},
+    "template": {"type": "object", "required": ["id", "version"], "properties": {"id": {"type": ["string", "null"]}, "version": {"type": ["string", "null"]}}, "additionalProperties": false},
+    "config_hash": {"type": "string"},
+    "input_asset_hashes": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+    "prompt_summary": {"type": ["object", "null"]},
+    "result_summary": {"type": ["object", "null"]},
+    "status_events": {"type": "array"},
+    "error": {"type": ["object", "null"]}
+  },
+  "additionalProperties": true
+}

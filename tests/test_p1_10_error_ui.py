@@ -53,10 +53,20 @@ def test_error_ui_consumes_frozen_channels() -> None:
 
 
 def test_error_ui_scope_guardrails() -> None:
-    """范围外能力不得出现：无后台定时轮询、无外部事件流、无 Webhook、无前端密钥计算。"""
+    """范围外能力不得出现：无后台定时轮询、无 Webhook、无前端密钥计算；事件流仅限 P2-03 监督台。
+
+    P2-03 起 EventSource 由运行监督台按冻结契约合法使用，且只允许出现在
+    obsOpenStream 中；错误呈现与其余模块仍不得使用事件流。
+    """
+    import re
+
     html = FRONTEND_HTML.read_text(encoding="utf-8")
-    for token in ("EventSource", "setInterval", "Webhook", "webhook", "crypto.subtle"):
+    for token in ("setInterval", "Webhook", "webhook", "crypto.subtle"):
         assert token not in html, f"错误呈现出现范围外能力标记: {token}"
+    script = re.search(r"<script>([\s\S]*?)</script>", html).group(1)
+    obs_open = re.search(r"function obsOpenStream\(\)\s*\{[\s\S]*?\n    \}", script)
+    assert obs_open, "缺少 P2-03 监督台的 obsOpenStream"
+    assert "EventSource" not in script.replace(obs_open.group(0), ""), "EventSource 只允许出现在 P2-03 监督台 obsOpenStream"
 
 
 def test_waiting_phases_have_no_failure_semantics() -> None:

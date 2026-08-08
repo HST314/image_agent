@@ -12,8 +12,9 @@ import re
 import json
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -25,6 +26,7 @@ from configs.runtime_policy import RuntimePolicy
 from agent_core.jobs import JobStore, WorkflowJobWorker
 from agent_core.guided_edit import GuidedEditRequest
 from agent_core.delivery import DeliveryService
+from agent_core.observability import event_page, progress_projection
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 
@@ -85,6 +87,32 @@ class ManualReturnRequest(StrictRequest):
 class BranchRequest(StrictRequest):
     checkpoint: str = Field(min_length=1, max_length=256)
     name: str | None = Field(default=None, min_length=2, max_length=64)
+    actor: str = Field(default="operator", min_length=1, max_length=256)
+    expected_version: int = Field(ge=1)
+
+class BranchSwitchRequest(StrictRequest):
+    branch_id: str = Field(pattern=r"^branch_[a-f0-9]{32}$")
+    checkpoint: str = Field(min_length=1, max_length=256)
+    expected_version: int = Field(ge=1)
+
+class HistoryReopenPreviewRequest(StrictRequest):
+    name: str | None = Field(default=None, min_length=2, max_length=64)
+
+
+def _trace_detail_allowed(request: Request, project_id: str) -> bool:
+    """Explicit host authorization hook; secure default is deny."""
+    authorizer = getattr(app.state, "model_call_detail_authorizer", None)
+    return bool(authorizer and authorizer(request, project_id))
+
+
+def _translate_model_call_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException): return exc
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail={"code": "MODEL_CALL_NOT_FOUND", "message": "模型调用不存在。"})
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=409, detail={"code": "MODEL_CALL_CURSOR_INVALID", "message": str(exc)})
+    return HTTPException(status_code=503, detail={"code": "MODEL_CALL_AUDIT_UNAVAILABLE",
+                                                   "message": "模型调用审计暂不可读取。"})
 
 
 @app.middleware("http")
@@ -217,7 +245,9 @@ JOB_WORKER = WorkflowJobWorker(_execute_job)
 
 
 def _recover_jobs(project_id: str) -> None:
+    store = _store(project_id)
     for job_id in _job_store(project_id).recoverable():
+        store.events.append("job_recovered", job_id=job_id, status="recovered")
         JOB_WORKER.submit(project_id, job_id)
 
 
@@ -256,6 +286,18 @@ def _translate_error(exc: Exception) -> HTTPException:
         status_code=503,
         detail=f"后端能力暂不可用：{exc}。已有进度已保留，可修正配置后恢复或重试。",
     )
+
+
+def _translate_observability_error(exc: Exception) -> HTTPException:
+    """Keep storage paths, parser details and raw exceptions out of public telemetry APIs."""
+    if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
+        return HTTPException(status_code=404, detail="工程或事件资源不存在。")
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=503, detail={
+        "code": "OBSERVABILITY_UNAVAILABLE", "trace_id": f"trace_{uuid4().hex}",
+        "message": "事件或进度数据暂不可读取。",
+    })
 
 
 @app.get("/", include_in_schema=False)
@@ -426,26 +468,102 @@ async def project_events(project_id: str, request: Request, after: int = 0) -> S
     """SSE stream with monotonic sequence resume (`after` or Last-Event-ID)."""
     try:
         store = _store(project_id)
-        store.manifest()
+        if not (store.root / "manifest.json").is_file():
+            raise FileNotFoundError("工程不存在。")
         cursor = max(after, int(request.headers.get("last-event-id", "0") or 0))
     except Exception as exc:
-        raise _translate_error(exc) from exc
+        raise _translate_observability_error(exc) from exc
 
     async def stream():
         nonlocal cursor
         idle = 0
         while idle < 150 and not await request.is_disconnected():
-            events = [event for event in store.history() if int(event.get("sequence", 0)) > cursor]
+            try:
+                page = event_page(store.events, limit=100, since=cursor)
+            except Exception:
+                trace_id = f"trace_{uuid4().hex}"
+                error = {"code": "OBSERVABILITY_UNAVAILABLE", "trace_id": trace_id,
+                         "message": "事件数据暂不可读取。"}
+                yield f"event: observability_error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n"
+                return
+            events = page["items"]
             if events:
                 idle = 0
                 for event in events:
                     cursor = int(event["sequence"])
-                    yield f"id: {cursor}\nevent: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    yield f"id: {cursor}\nevent: {event['event_type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
             else:
                 idle += 1
                 yield ": keepalive\n\n"
             await asyncio.sleep(.2)
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/projects/{project_id}/event-log")
+async def project_event_log(project_id: str,
+                            limit: int = Query(default=50, ge=1, le=100),
+                            cursor: str | None = Query(default=None, max_length=512),
+                            since: int | None = Query(default=None, ge=0)) -> dict[str, Any]:
+    """Bounded, read-only event pages with a frozen high-water mark."""
+    try:
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file():
+            raise FileNotFoundError("工程不存在。")
+        return await asyncio.to_thread(event_page, store.events, limit=limit, cursor=cursor, since=since)
+    except Exception as exc:
+        raise _translate_observability_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/progress")
+async def project_progress(project_id: str) -> dict[str, Any]:
+    """Read-only progress derived exclusively from durable jobs/checkpoints/events."""
+    try:
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file():
+            raise FileNotFoundError("工程不存在。")
+        return await asyncio.to_thread(progress_projection, store.root, store.events)
+    except Exception as exc:
+        raise _translate_observability_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/model-calls")
+async def list_model_calls(project_id: str, limit: int = Query(50, ge=1, le=100),
+                           cursor: str | None = Query(None, max_length=512)) -> dict[str, Any]:
+    """Read-only, redacted model-call summaries."""
+    try:
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file(): raise FileNotFoundError(project_id)
+        return await asyncio.to_thread(store.prompts.list_calls, limit=limit, cursor=cursor)
+    except Exception as exc:
+        raise _translate_model_call_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/model-calls/{call_id}")
+async def get_model_call(project_id: str, call_id: str, request: Request,
+                         detail: bool = False) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"call_[a-f0-9]{32}", call_id): raise FileNotFoundError(call_id)
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file(): raise FileNotFoundError(project_id)
+        if detail and not _trace_detail_allowed(request, project_id):
+            raise HTTPException(status_code=403, detail={"code": "MODEL_CALL_DETAIL_FORBIDDEN",
+                                                         "message": "无权读取模型调用详情。"})
+        value = await asyncio.to_thread(store.prompts.detail if detail else store.prompts.summary, call_id)
+        return {"view": "detail" if detail else "summary", "retention": "append_only_audit", "call": value}
+    except Exception as exc:
+        raise _translate_model_call_error(exc) from exc
+
+
+@app.get("/api/projects/{project_id}/model-calls/{call_id}/text-deltas")
+async def get_model_call_deltas(project_id: str, call_id: str, after: int = Query(0, ge=0),
+                                limit: int = Query(100, ge=1, le=100)) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"call_[a-f0-9]{32}", call_id): raise FileNotFoundError(call_id)
+        store = _store(project_id)
+        if not (store.root / "manifest.json").is_file(): raise FileNotFoundError(project_id)
+        return await asyncio.to_thread(store.prompts.chunks, call_id, after=after, limit=limit)
+    except Exception as exc:
+        raise _translate_model_call_error(exc) from exc
 
 
 @app.post("/api/projects/{project_id}/retry")
@@ -470,10 +588,63 @@ async def create_branch(project_id: str, body: BranchRequest) -> dict[str, Any]:
             if body.name:
                 _safe_project_id(body.name)
             with store.lock():
-                store.branch_from(body.checkpoint, name=body.name)
-            return _project_view(store)
+                store.branch_from(body.checkpoint, name=body.name, actor=body.actor,
+                                  expected_version=body.expected_version)
+            return {"branches": store.list_branches(), "project": _project_view(store)}
 
         return await asyncio.to_thread(execute)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/branches")
+async def list_project_branches(project_id: str) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(_store(project_id).list_branches)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/history")
+async def list_project_history(project_id: str, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(_store(project_id).history_index, limit=limit, cursor=cursor)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/history/{node_id}")
+async def get_project_history(project_id: str, node_id: str) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"history_[a-f0-9]{32}", node_id):
+            raise FileNotFoundError("历史节点不存在。")
+        return await asyncio.to_thread(_store(project_id).history_detail, node_id)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.post("/api/projects/{project_id}/history/{node_id}/reopen-preview")
+async def preview_history_reopen(project_id: str, node_id: str,
+                                 body: HistoryReopenPreviewRequest) -> dict[str, Any]:
+    try:
+        if not re.fullmatch(r"history_[a-f0-9]{32}", node_id):
+            raise FileNotFoundError("历史节点不存在。")
+        return await asyncio.to_thread(_store(project_id).history_reopen_preview, node_id, name=body.name)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.get("/api/projects/{project_id}/checkpoints/{branch}/{filename}")
+async def inspect_project_checkpoint(project_id: str, branch: str, filename: str) -> dict[str, Any]:
+    """P2-01 read-only inspection; it deliberately has no state mutation path."""
+    try:
+        return await asyncio.to_thread(_store(project_id).inspect_checkpoint,
+                                       f"checkpoints/{branch}/{filename}")
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+@app.post("/api/projects/{project_id}/branches/switch")
+async def switch_project_branch(project_id: str, body: BranchSwitchRequest) -> dict[str, Any]:
+    try:
+        store = _store(project_id)
+        await asyncio.to_thread(store.switch_branch, body.branch_id, body.checkpoint,
+                                expected_version=body.expected_version)
+        return {"branches": store.list_branches(), "project": _project_view(store)}
     except Exception as exc:
         raise _translate_error(exc) from exc
 
