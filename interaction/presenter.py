@@ -32,7 +32,9 @@ class Presenter:
     def candidates(self, assets: list[dict[str, Any]]) -> str:
         rows = ["请选择一张作为当前主图："]
         for index, asset in enumerate(assets, 1):
-            rows.append(f"  {index}. 候选方向 {index} — {asset.get('uri', '图片已保存')}")
+            candidate_id = str(asset.get("id") or f"candidate-{index}")
+            rows.append(f"  {index}. {candidate_id}（候选方向 {index}）— {asset.get('uri', '图片已保存')}")
+        rows.append("请使用 --selected-id <稳定 ID> 选择，例如 --selected-id candidate-1。")
         return "\n".join(rows)
 
     def technical(self, value: Any) -> str:

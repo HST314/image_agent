@@ -17,7 +17,12 @@ from agent_core.models import QuestionCard
 def _flow_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--model-config", type=Path, default=Path(__file__).parent / "configs/model_config.yaml")
     command.add_argument("--offline", action="store_true", help="显式离线测试模式（模拟图不可最终交付）")
-    command.add_argument("--selected-id", help="从五张候选图中选择的编号")
+    command.add_argument("--selected-id", help="从候选列表中选择展示的稳定 ID（例如 candidate-1）")
+    command.add_argument("--quality-action", choices=("continue_generation", "manual_rework", "abandon"),
+                         help="质检达到上限后的人工分流：继续生成、转人工微调或放弃")
+    command.add_argument("--idempotency-key", help="人工分流或付费人工微调的唯一幂等键")
+    command.add_argument("--expense-confirmed", action="store_true",
+                         help="确认 continue_generation 将产生新费用；其他分流无需使用")
     command.add_argument("--manual-action", choices=("execute", "edit_and_execute", "skip", "end", "accept_current"),
                          help="end=终止且不交付；accept_current=人工接受当前图并记录审计")
     command.add_argument("--edited-delta", help="选择编辑建议后执行时的新建议")
@@ -56,6 +61,9 @@ def _options(args: argparse.Namespace) -> RunnerOptions:
                          human_prompt=getattr(args, "human_prompt", None), edited_markdown=markdown,
                          task_spec_action="confirm" if getattr(args, "confirm_task_spec", False) else None,
                          final_action=getattr(args, "final_action", None), actor=getattr(args, "actor", None),
+                         quality_action=getattr(args, "quality_action", None),
+                         idempotency_key=getattr(args, "idempotency_key", None),
+                         expense_confirmed=getattr(args, "expense_confirmed", False),
                          clarification_answers=answers)
 
 

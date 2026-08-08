@@ -79,9 +79,12 @@ python3 main.py new demo --task /tmp/my-task.json
 流程遇到澄清、任务书确认、主图选择、逐轮放行或最终确认时会安全暂停。补充相应参数后运行 `resume`，不会重复已完成的付费步骤：
 
 ```bash
-python3 main.py resume demo --selected-id <候选编号>
+python3 main.py resume demo --selected-id candidate-1
 python3 main.py resume demo --confirm-task-spec --actor <操作者标识>
 python3 main.py resume demo --manual-action execute
+python3 main.py resume demo --quality-action manual_rework --actor <操作者标识> --idempotency-key <唯一键>
+python3 main.py resume demo --quality-action abandon --actor <操作者标识> --idempotency-key <唯一键>
+python3 main.py resume demo --quality-action continue_generation --actor <操作者标识> --idempotency-key <唯一键> --expense-confirmed
 python3 main.py resume demo --human-prompt "增强主体金属质感，背景更克制"
 python3 main.py resume demo --final-action confirm --actor <操作者标识>
 ```

@@ -9,6 +9,8 @@ from calibrator.calibration_loop import ManualAction
 from render_clients.payload_mapper import build_render_payload
 from storage.project_store import ProjectStore
 from workspace_cli import main
+from workspace_cli import _options, parser
+from interaction.presenter import Presenter
 import pytest
 from agent_core.workflow import SelfCheckPolicy, InvalidTransitionError
 from calibrator.calibration_loop import CalibrationLoop
@@ -248,3 +250,20 @@ def test_two_processes_only_one_gets_project_lock(tmp_path: Path):
         process = mp.Process(target=_try_project_lock, args=(str(tmp_path), queue))
         process.start(); process.join(5)
         assert process.exitcode == 0 and queue.get(timeout=1) == "blocked"
+def test_cli_candidate_output_exposes_selectable_stable_ids():
+    output = Presenter().candidates([
+        {"id": f"candidate-{index}", "uri": f"asset://candidate-{index}"}
+        for index in range(1, 6)
+    ])
+    assert "candidate-1" in output
+    assert "--selected-id candidate-1" in output
+
+
+def test_cli_quality_disposition_arguments_reach_runner_options():
+    args = parser().parse_args(["resume", "demo", "--offline", "--quality-action", "continue_generation",
+                                "--actor", "operator", "--idempotency-key", "quality-001", "--expense-confirmed"])
+    options = _options(args)
+    assert options.quality_action == "continue_generation"
+    assert options.actor == "operator"
+    assert options.idempotency_key == "quality-001"
+    assert options.expense_confirmed is True
