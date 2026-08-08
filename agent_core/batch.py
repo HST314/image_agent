@@ -41,15 +41,18 @@ class CandidateBatchGenerator:
 
             def one(index: int, key: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
                 error: Exception | None = None
-                prior_started = sum(1 for event in events
-                                    if event.get("type") == "candidate_attempt_started"
-                                    and event.get("idempotency_key") == key)
-                # Compatibility with checkpoints written before attempt-start
-                # accounting existed: each recorded failure consumed one call.
-                if prior_started == 0:
-                    prior_started = sum(1 for event in events
-                                        if event.get("type") == "candidate_failed"
-                                        and event.get("idempotency_key") == key)
+                keyed_events = [event for event in events if event.get("idempotency_key") == key]
+                first_started = next((position for position, event in enumerate(keyed_events)
+                                      if event.get("type") == "candidate_attempt_started"), len(keyed_events))
+                # Before attempt-start auditing existed, each failure represented
+                # one paid call. From the first start event onward, starts are the
+                # sole accounting source so their matching failures are not counted
+                # twice and a start followed by a crash still consumes the budget.
+                legacy_failures = sum(1 for event in keyed_events[:first_started]
+                                      if event.get("type") == "candidate_failed")
+                audited_starts = sum(1 for event in keyed_events[first_started:]
+                                     if event.get("type") == "candidate_attempt_started")
+                prior_started = legacy_failures + audited_starts
                 for attempt in range(prior_started + 1, self.attempts + 1):
                     if self.should_cancel():
                         raise JobCancelledError("作业已请求取消，未开始的供应商调用已停止。")
