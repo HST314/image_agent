@@ -102,6 +102,11 @@ class RuntimeSettingsStore:
         return self._locked(lambda d: {"schema_version": d["schema_version"], "version": d["version"],
             "sha256": d["sha256"], "policy": d["policy"]}, write=False)
 
+    def secret(self, key: str) -> str | None:
+        if key not in FIELD_META or not FIELD_META[key].get("sensitive"):
+            raise KeyError(key)
+        return self._locked(lambda data: data["secrets"].get(key), write=False)
+
     def describe(self) -> dict[str, Any]:
         def read(data: dict[str, Any]) -> dict[str, Any]:
             schema = RuntimePolicy.model_json_schema()

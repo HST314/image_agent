@@ -162,7 +162,8 @@ def _runner(store: ProjectStore, offline: bool, runtime_policy: RuntimePolicy | 
     if not MODEL_CONFIG.is_file():
         raise RuntimeError("模型配置文件不存在，请设置 IMAGE_AGENT_MODEL_CONFIG。")
     policy = runtime_policy or RuntimePolicy.model_validate(store.runtime_snapshot()["policy"])
-    return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline, runtime_policy=policy)
+    return WorkflowRunner(store, MODEL_CONFIG, offline_mode=offline, runtime_policy=policy,
+                          provider_api_key=_settings_store().secret("provider_api_key"))
 
 
 def _options(body: AdvanceRequest) -> RunnerOptions:
