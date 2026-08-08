@@ -23,7 +23,7 @@ def test_schema_drives_metadata_defaults_and_reads_do_not_write_business_state(t
     assert {item["key"] for item in result["fields"]} == set(FIELD_META)
     assert next(x for x in result["fields"] if x["key"] == "watermark")["default"] is False
     assert next(x for x in result["fields"] if x["key"] == "provider_api_key")["value"] is None
-    assert not store.path.exists() and not store.audit_path.exists()
+    assert not store.path.exists()
     assert before == set()
 
 
@@ -42,8 +42,9 @@ def test_rbac_validation_secret_masking_and_audit(tmp_path: Path, monkeypatch):
     for response in (client.get("/api/runtime-settings"), client.get("/api/runtime-settings/provider_api_key"),
                      client.get("/api/runtime-settings/missing")):
         assert "super-secret-value" not in response.text
-    assert "super-secret-value" not in settings(tmp_path).audit_path.read_text()
-    audit = settings(tmp_path).audit()[0]
+    audit_payload = settings(tmp_path).audit()
+    assert "super-secret-value" not in json.dumps(audit_payload)
+    audit = audit_payload[0]
     assert audit["actor"] == "admin-a" and audit["before_version"] == 1 and audit["version"] == 2
 
 

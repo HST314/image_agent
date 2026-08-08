@@ -73,7 +73,6 @@ class RuntimeSettingsStore:
     def __init__(self, root: Path, defaults: RuntimePolicy):
         self.root, self.defaults = root, defaults
         self.path = root / ".runtime-settings.json"
-        self.audit_path = root / ".runtime-settings.audit.jsonl"
         self.lock_path = root / ".runtime-settings.lock"
 
     def _locked(self, operation: Callable[[dict[str, Any]], Any], *, write: bool) -> Any:
@@ -89,7 +88,7 @@ class RuntimeSettingsStore:
 
     def _initial(self) -> dict[str, Any]:
         policy = self.defaults.model_dump(mode="json")
-        return {"schema_version": 1, "version": 1, "policy": policy, "secrets": {}, "secret_revisions": {},
+        return {"schema_version": 1, "version": 1, "policy": policy, "secrets": {}, "secret_revisions": {}, "audit": [],
                 "sha256": self._hash(policy, {}), "updated_at": None}
 
     @staticmethod
@@ -155,14 +154,12 @@ class RuntimeSettingsStore:
             data.update(version=before + 1, policy=validated,
                         sha256=self._hash(validated, data["secret_revisions"]), updated_at=_now())
             data["secrets"].update(secret_updates)
-            atomic_json(self.path, data); os.chmod(self.path, 0o600)
             event = {"event": "runtime_settings_updated", "actor": actor, "role": role,
                      "before_version": before, "version": data["version"], "sha256": data["sha256"],
                      "changed_keys": sorted(changes), "effective_scopes": sorted({FIELD_META[k]["scope"] for k in changes}),
                      "at": data["updated_at"]}
-            with self.audit_path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-                stream.flush(); os.fsync(stream.fileno())
+            data.setdefault("audit", []).append(event)
+            atomic_json(self.path, data); os.chmod(self.path, 0o600)
             return self.describe_unlocked(data)
         return self._locked(mutate, write=True)
 
@@ -171,7 +168,4 @@ class RuntimeSettingsStore:
                 "changed": True, "secret_states": {k: "set" for k in data["secrets"]}}
 
     def audit(self) -> list[dict[str, Any]]:
-        def read(_: dict[str, Any]) -> list[dict[str, Any]]:
-            if not self.audit_path.exists(): return []
-            return [json.loads(line) for line in self.audit_path.read_text(encoding="utf-8").splitlines() if line]
-        return self._locked(read, write=False)
+        return self._locked(lambda data: list(data.get("audit", [])), write=False)
