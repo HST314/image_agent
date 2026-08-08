@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "DesignTaskEnvelope.v1",
+  "title": "DesignTaskEnvelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "idempotency_key", "task"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "idempotency_key": {"type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$"},
+    "task": {"$ref": "ImageTaskCard.schema.json"}
+  }
+}

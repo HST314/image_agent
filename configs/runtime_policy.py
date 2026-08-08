@@ -44,6 +44,7 @@ class RuntimePolicy(BaseModel):
     default_output_size: str = Field(pattern=r"^\d{2,5}x\d{2,5}$")
     response_format: Literal["url", "b64_json"]
     watermark: bool
+    skill_failure_mode: Literal["block", "allow_degraded"] = "block"
 
     @model_validator(mode="after")
     def validate_combinations(self):

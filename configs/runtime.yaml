@@ -20,3 +20,4 @@ image_api_base_url: ""
 default_output_size: "1024x1024"
 response_format: "url"
 watermark: false
+skill_failure_mode: block

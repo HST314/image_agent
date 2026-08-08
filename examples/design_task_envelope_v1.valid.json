@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "idempotency_key": "parent-job:example-001",
+  "task": {
+    "task_id": "task-contract-example",
+    "project_id": "contract-example",
+    "source_refs": [{"ref_id": "brief-1", "ref_type": "brief"}],
+    "deliverable_goal": "生成一张审核用主视觉",
+    "usage_context": "内部审核",
+    "known_facts": {},
+    "unknowns": {},
+    "asset_inputs": [],
+    "status": "draft"
+  }
+}

@@ -237,6 +237,29 @@ class ProjectStore:
         self.events.append("project_created", branch="main")
         return manifest
 
+    @classmethod
+    def claim_design_task(cls, projects_root: str | Path, project_id: str, key: str, raw_hash: str) -> tuple[str, bool]:
+        """Atomically bind an inbound idempotency key before any paid work starts."""
+        root = Path(projects_root)
+        root.mkdir(parents=True, exist_ok=True)
+        lock_path = root / ".design-task-idempotency.lock"
+        registry_path = root / ".design-task-idempotency.json"
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else {}
+            existing = registry.get(key)
+            if existing:
+                if existing.get("raw_hash") != raw_hash:
+                    raise ValueError("同一幂等键不能提交不同的原始任务。")
+                return str(existing["project_id"]), False
+            registry[key] = {"project_id": project_id, "raw_hash": raw_hash, "claimed_at": _now()}
+            atomic_json(registry_path, registry)
+            return project_id, True
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def runtime_snapshot(self) -> dict[str, Any]:
         value = json.loads((self.root / "project.yaml").read_text(encoding="utf-8"))
         if not value.get("runtime_policy"):
