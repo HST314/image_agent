@@ -33,16 +33,16 @@ def test_cli_new_resume_and_registry(tmp_path: Path, capsys):
     root = tmp_path / "projects"
     assert main(["--projects-root", str(root), "new", "p", "--task", str(task), "--offline"]) == 0
     first_stdout = capsys.readouterr().out
-    assert "请选择一张作为当前主图" in first_stdout and "候选方向 5" in first_stdout
+    assert "# 创作任务书" in first_stdout
     assert "candidate_index" not in first_stdout and "sha256" not in first_stdout
     store = ProjectStore(root, "p")
-    assert store.manifest()["current_checkpoint"]["state"] == "master_candidate_selection"
+    assert store.manifest()["current_checkpoint"]["state"] == "confirmation_build"
     runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
     assert set(runner.handlers) == set(runner.ORDER)
-    assert main(["--projects-root", str(root), "resume", "p", "--offline", "--selected-id", "candidate-1"]) == 0
+    assert main(["--projects-root", str(root), "resume", "p", "--offline", "--confirm-task-spec", "--actor", "tester"]) == 0
     resumed_stdout = capsys.readouterr().out
-    assert "第 1 轮画面质检" in resumed_stdout and "修改建议" in resumed_stdout
-    assert any(e["type"] == "inspection_completed" for e in store.history())
+    assert "请选择一张作为当前主图" in resumed_stdout and "候选方向 5" in resumed_stdout
+    assert any(e["type"] == "task_spec_confirmed" for e in store.history())
 
 
 def test_retry_calls_real_failed_handler_on_new_branch(tmp_path: Path):
@@ -128,7 +128,9 @@ def test_self_check_to_final_approval_accepts_only_audited_checked_asset(tmp_pat
     checked = runner.run(base, RunnerOptions(), only_state="self_check_iteration")
     assert checked["asset"]["sha256"] == checked["latest_checked_asset_hash"]
     human_done = runner.run(checked, RunnerOptions(), only_state="human_prompt_iteration")
-    delivered = runner.run(human_done, RunnerOptions(final_approved=True), only_state="final_approval")
+    pending = runner.run(human_done, RunnerOptions(), only_state="final_approval")
+    assert pending["waiting"] and pending["phase"] == "waiting_final_confirmation"
+    delivered = runner.run(pending, RunnerOptions(final_action="confirm", actor="reviewer"), only_state="final_approval")
     assert delivered["completed"] and delivered["final_asset"]["sha256"] == asset["sha256"]
     for mutation in (
         {"asset": {**asset, "sha256":"unchecked"}},
@@ -138,7 +140,38 @@ def test_self_check_to_final_approval_accepts_only_audited_checked_asset(tmp_pat
     ):
         invalid = {**human_done, **mutation, "state":"human_prompt_iteration"}
         with pytest.raises(ValueError):
-            runner.run(invalid, RunnerOptions(final_approved=True), only_state="final_approval")
+            runner.run(invalid, RunnerOptions(final_action="confirm", actor="reviewer"), only_state="final_approval")
+
+def test_task_spec_confirmation_is_hard_gate_and_edit_invalidates_it(tmp_path: Path):
+    store = ProjectStore(tmp_path, "spec-gate"); store.create()
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    base = {"task_card": task_payload()}
+    spec_wait = runner.run(base, RunnerOptions(), only_state="confirmation_build")
+    assert spec_wait["waiting"] and spec_wait["phase"] == "waiting_task_spec_confirmation"
+    with pytest.raises(ValueError, match="尚未人工确认"):
+        runner.run(spec_wait, RunnerOptions(), only_state="initial_candidate_generation")
+    confirmed = runner.run(spec_wait, RunnerOptions(task_spec_action="confirm", actor="operator-1"), only_state="confirmation_build")
+    fact = confirmed["task_spec_confirmation"]
+    assert fact["task_spec_version"] == 1 and fact["subject_sha256"] == confirmed["task_specification"]["content_hash"]
+    edited = runner.run(confirmed, RunnerOptions(edited_markdown=confirmed["task_markdown"] + "\n新增要求"), only_state="confirmation_build")
+    assert edited["task_specification"]["version"] == 2 and edited["task_spec_confirmation"] is None
+    with pytest.raises(ValueError, match="尚未人工确认"):
+        runner.run(edited, RunnerOptions(), only_state="initial_candidate_generation")
+
+def test_final_confirmation_binds_hash_continue_and_freezes(tmp_path: Path):
+    store = ProjectStore(tmp_path, "final-gate"); store.create()
+    runner = WorkflowRunner(store, Path("configs/model_config.yaml"), offline_mode=True)
+    asset = normalize_image_asset({"uri":"https://images.example/final.png", "provider":"ark", "model":"seedream"})
+    ready = {"state":"human_prompt_iteration", "asset":asset, "current_asset":asset,
+             "calibration_status":"completed", "termination_satisfied":True, "termination_reason":"pass",
+             "latest_checked_asset_hash":asset["sha256"], "selected_policy":{"termination":"solo","release":"auto"}}
+    continued = runner.run(ready, RunnerOptions(final_action="continue", actor="reviewer"), only_state="final_approval")
+    assert continued["waiting"] and continued["phase"] == "waiting_human_rework" and not continued["completed"]
+    pending = runner.run(ready, RunnerOptions(), only_state="final_approval")
+    frozen = runner.run(pending, RunnerOptions(final_action="confirm", actor="reviewer"), only_state="final_approval")
+    assert frozen["delivery_frozen"] and frozen["final_confirmation"]["asset_sha256"] == asset["sha256"]
+    with pytest.raises(ValueError, match="已经完成最终确认"):
+        runner.run(frozen, RunnerOptions(human_prompt="再改一下"))
 
 def test_runner_streams_round_to_user_and_checkpoint_clarification(tmp_path: Path):
     store = ProjectStore(tmp_path, "stream"); store.create(); output = []
