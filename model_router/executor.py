@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 from uuid import uuid4
 from storage.prompt_store import PromptStore
+from agent_core.error_taxonomy import retry_after_seconds
 
 T = TypeVar("T")
 
@@ -20,9 +21,9 @@ class ModelCallError(RuntimeError):
     def __str__(self) -> str: return self.message
 
 class ModelExecutor(Generic[T]):
-    def __init__(self, *, max_attempts: int = 2, base_delay: float = .1, timeout: float = 180, sleeper: Callable[[float], None] = time.sleep, randomizer: Callable[[float, float], float] = random.uniform) -> None:
+    def __init__(self, *, max_attempts: int = 2, base_delay: float = .1, max_delay: float = 30, timeout: float = 180, sleeper: Callable[[float], None] = time.sleep, randomizer: Callable[[float, float], float] = random.uniform) -> None:
         if max_attempts < 1 or timeout <= 0: raise ValueError("max_attempts 和 timeout 必须为正数。")
-        self.max_attempts, self.base_delay, self.timeout = max_attempts, base_delay, timeout
+        self.max_attempts, self.base_delay, self.max_delay, self.timeout = max_attempts, base_delay, max_delay, timeout
         self.sleeper, self.randomizer = sleeper, randomizer
 
     def run(self, call: Callable[[], T], *, request_id: str | None = None, trace_id: str | None = None) -> T:
@@ -43,7 +44,9 @@ class ModelExecutor(Generic[T]):
                 category, retryable = self.classify(exc)
             if not retryable or attempt == self.max_attempts:
                 raise ModelCallError(str(last) or category, retryable, category, req, trace) from last
-            self.sleeper(self.base_delay * 2 ** (attempt - 1) + self.randomizer(0, self.base_delay))
+            requested = retry_after_seconds(last) or 0
+            exponential = self.base_delay * 2 ** (attempt - 1) + self.randomizer(0, self.base_delay)
+            self.sleeper(min(self.max_delay, max(requested, exponential)))
         raise AssertionError("unreachable")
 
     def audited_run(self, call: Callable[[], T], *, prompts: PromptStore, audit: dict[str, Any], parser: Callable[[T], Any] | None = None) -> T:
@@ -60,7 +63,10 @@ class ModelExecutor(Generic[T]):
     def classify(exc: BaseException) -> tuple[str, bool]:
         if isinstance(exc, (ValueError, TypeError, PermissionError)): return "validation_or_refusal", False
         status = getattr(exc, "status_code", None)
-        if status in {400, 401, 403, 404, 422}: return "request_rejected", False
+        message = str(exc).lower()
+        if status == 401: return "authentication", False
+        if status == 403 and ("content" in message or "policy" in message or "moder" in message): return "content_policy", False
+        if status in {400, 403, 404, 422}: return "request_rejected", False
         if status == 429: return "rate_limited", True
         if isinstance(status, int) and status >= 500: return "provider_unavailable", True
         if isinstance(exc, (ConnectionError, TimeoutError)): return "transport", True

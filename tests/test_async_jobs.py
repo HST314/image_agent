@@ -9,6 +9,7 @@ from agent_core.jobs import JobStore
 from agent_core.batch import CandidateBatchGenerator
 from storage.project_store import ProjectStore
 import jsonschema
+import pytest
 
 
 def _claim_and_crash(project_root: str, job_id: str) -> None:
@@ -80,6 +81,19 @@ def test_legacy_job_is_migrated_under_lock(tmp_path: Path) -> None:
     assert migrated["heartbeat_at"] is None and migrated["attempt"] == 0
 
 
+def test_legacy_job_error_is_migrated_to_stable_contract(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path, "legacy-error-job"); store.create()
+    jobs = JobStore(store.root)
+    job, _ = jobs.create("legacy-error-key", {"x": 1})
+    jobs.claim(job["job_id"])
+    jobs.finish(job["job_id"], error={"code": "Timeout", "message": "old timeout", "retryable": True})
+    migrated = JobStore(store.root).get(job["job_id"])
+    assert migrated["error"]["stage"] == "workflow"
+    assert migrated["error"]["retryable"] is True
+    schema = json.loads(Path("schemas/AsyncJob.v1.schema.json").read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(migrated)
+
+
 def test_failed_candidate_retry_reuses_slot_key_and_only_pays_failed_slot(tmp_path: Path) -> None:
     store = ProjectStore(tmp_path, "slots")
     store.create()
@@ -114,10 +128,10 @@ def test_running_cancel_stops_supplier_calls_that_have_not_started(tmp_path: Pat
         cancelled = True
         return {"uri": str(index), "sha256": str(index), "candidate_index": index}
 
-    result = CandidateBatchGenerator(
-        store, render, attempts=2, max_workers=1, should_cancel=lambda: cancelled
-    ).generate("confirmed-spec", count=5)
+    from agent_core.error_taxonomy import JobCancelledError
+    with pytest.raises(JobCancelledError):
+        CandidateBatchGenerator(
+            store, render, attempts=2, max_workers=1, should_cancel=lambda: cancelled
+        ).generate("confirmed-spec", count=5)
     assert calls == [0]
-    assert len(result["succeeded"]) == 1
-    assert [failure["index"] for failure in result["failed"]] == [1, 2, 3, 4]
-    assert all(failure["cancelled"] for failure in result["failed"])
+    assert not [event for event in store.history() if event["type"] == "candidate_failed"]

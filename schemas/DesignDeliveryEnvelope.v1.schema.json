@@ -6,16 +6,43 @@
   "additionalProperties": false,
   "required": ["schema_version", "final_image", "design_note"],
   "properties": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"enum": ["1.0", "1.1"]},
     "final_image": {
       "type": "object", "additionalProperties": false,
       "required": ["artifact_id", "uri", "sha256"],
       "properties": {
         "artifact_id": {"type": "string", "pattern": "^artifact_[a-f0-9]{64}$"},
         "uri": {"type": "string", "pattern": "^artifact://artifact_[a-f0-9]{64}$"},
-        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "format": {"type": "string"},
+        "media_type": {"type": "string"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "size_bytes": {"type": "integer", "minimum": 1}
       }
     },
-    "design_note": {"type": "string", "minLength": 1, "maxLength": 2000}
-  }
+    "design_note": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "delivery_version": {"type": "integer", "minimum": 1},
+    "task_id": {"type": "string"},
+    "design_job_id": {"type": "string"},
+    "status": {"const": "ready"},
+    "return_status": {"enum": ["pending_return", "returned"]},
+    "design_note_sources": {"type": "object"},
+    "task_confirmation": {"type": "object"},
+    "final_confirmation": {"type": "object"},
+    "trace_refs": {"type": "array", "items": {"type": "string"}},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "payload_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "created_at": {"type": "string"},
+    "return_record": {"type": ["object", "null"]}
+  },
+  "allOf": [{
+    "if": {"properties": {"schema_version": {"const": "1.1"}}},
+    "then": {
+      "required": ["delivery_version", "task_id", "design_job_id", "status", "return_status",
+        "design_note_sources", "task_confirmation", "final_confirmation", "trace_refs",
+        "source_sha256", "payload_sha256", "created_at"],
+      "properties": {"final_image": {"required": ["format", "media_type", "width", "height", "size_bytes"]}}
+    }
+  }]
 }

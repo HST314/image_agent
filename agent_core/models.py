@@ -155,15 +155,47 @@ class FinalImageRef(StrictBaseModel):
     artifact_id: str = Field(pattern=r"^artifact_[a-f0-9]{64}$")
     uri: str = Field(pattern=r"^artifact://artifact_[a-f0-9]{64}$")
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    format: str | None = None
+    media_type: str | None = None
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    size_bytes: int | None = Field(default=None, gt=0)
 
 
 class DesignDeliveryEnvelope(StrictBaseModel):
     """Minimal first-phase response visible to the parent agent."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.0"
     final_image: FinalImageRef
     design_note: str = Field(min_length=1, max_length=2000)
+    delivery_version: int | None = Field(default=None, gt=0)
+    task_id: str | None = None
+    design_job_id: str | None = None
+    status: Literal["ready"] | None = None
+    return_status: Literal["pending_return", "returned"] | None = None
+    design_note_sources: dict[str, Any] | None = None
+    task_confirmation: dict[str, Any] | None = None
+    final_confirmation: dict[str, Any] | None = None
+    trace_refs: list[str] | None = None
+    source_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    payload_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    created_at: str | None = None
+    return_record: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def version_1_1_is_self_contained(self) -> "DesignDeliveryEnvelope":
+        if self.schema_version == "1.1":
+            required = ("delivery_version", "task_id", "design_job_id", "status", "return_status",
+                        "design_note_sources", "task_confirmation", "final_confirmation", "trace_refs",
+                        "source_sha256", "payload_sha256", "created_at")
+            if any(getattr(self, field) in (None, [], {}) for field in required):
+                raise ValueError("DesignDeliveryEnvelope 1.1 缺少自包含交付字段。")
+            image_required = (self.final_image.format, self.final_image.media_type, self.final_image.width,
+                              self.final_image.height, self.final_image.size_bytes)
+            if any(value is None for value in image_required):
+                raise ValueError("DesignDeliveryEnvelope 1.1 缺少图片格式或尺寸。")
+        return self
 
 
 class QuestionOption(StrictBaseModel):

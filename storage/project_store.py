@@ -191,6 +191,13 @@ class ArtifactStore:
             raise CorruptProjectError("图片资源内容哈希校验失败。")
         return candidate
 
+    def record(self, artifact_id: str) -> dict[str, Any]:
+        record = next((item for item in reversed(EventStore(self.metadata).read_all())
+                       if item.get("type") == "artifact_saved" and item.get("artifact_id") == artifact_id), None)
+        if record is None:
+            raise FileNotFoundError("图片资源不存在。")
+        return record
+
 
 class CheckpointStore:
     def __init__(self, root: Path) -> None:

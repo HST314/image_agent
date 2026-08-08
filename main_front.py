@@ -23,6 +23,8 @@ from calibrator.calibration_loop import ManualAction
 from storage.project_store import ProjectStore, content_hash
 from configs.runtime_policy import RuntimePolicy
 from agent_core.jobs import JobStore, WorkflowJobWorker
+from agent_core.guided_edit import GuidedEditRequest
+from agent_core.delivery import DeliveryService
 
 from configs.env_loader import load_dotenv  # 引入 .env 加载器
 
@@ -64,12 +66,20 @@ class AdvanceRequest(StrictRequest):
     manual_action: Literal["execute", "edit_and_execute", "skip", "end", "accept_current"] | None = None
     edited_delta: str | None = Field(default=None, max_length=4_000)
     human_prompt: str | None = Field(default=None, max_length=8_000)
+    guided_edit: GuidedEditRequest | None = None
     task_spec_action: Literal["confirm"] | None = None
     final_action: Literal["confirm", "continue"] | None = None
     actor: str | None = Field(default=None, min_length=1, max_length=256)
     quality_action: Literal["continue_generation", "manual_rework", "abandon"] | None = None
     expense_confirmed: bool = False
     offline: bool = False
+
+
+class ManualReturnRequest(StrictRequest):
+    delivery_version: int = Field(gt=0)
+    actor: str = Field(min_length=1, max_length=256)
+    target: str = Field(min_length=1, max_length=512)
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
 
 
 class BranchRequest(StrictRequest):
@@ -115,6 +125,7 @@ def _options(body: AdvanceRequest) -> RunnerOptions:
         selected_id=body.selected_id,
         manual_action=action,
         human_prompt=body.human_prompt,
+        guided_edit=body.guided_edit,
         edited_markdown=body.edited_markdown,
         task_spec_action=body.task_spec_action,
         final_action=body.final_action,
@@ -162,7 +173,9 @@ def _business_status(snapshot: dict[str, Any]) -> str:
 def _job_store(project_id: str) -> JobStore:
     store = _store(project_id)
     store.manifest()
-    return JobStore(store.root)
+    snapshot = store.runtime_snapshot()
+    policy = RuntimePolicy.model_validate(snapshot["policy"])
+    return JobStore(store.root, max_attempts=policy.max_render_retries + 1)
 
 
 def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
@@ -185,14 +198,18 @@ def _execute_job(project_id: str, reference: dict[str, Any]) -> None:
             job["job_id"], completed=completed, total=total, unit=unit
         )
         runner.run(snapshot, _options(body))
+        from agent_core.error_taxonomy import JobCancelledError
+        if jobs.cancellation_requested(job["job_id"]):
+            raise JobCancelledError("作业在完成前收到取消请求。")
         if not jobs.cancellation_requested(job["job_id"]):
             current = jobs.get(job["job_id"])["progress"]
             jobs.heartbeat(job["job_id"], completed=current["total"], total=current["total"], unit=current["unit"])
         finished = jobs.finish(job["job_id"])
         store.events.append("job_finished", job_id=job["job_id"], status=finished["status"])
     except Exception as exc:
-        finished = jobs.finish(job["job_id"], error={"code": type(exc).__name__, "message": str(exc),
-                                                        "retryable": not isinstance(exc, (ValueError, TypeError))})
+        from agent_core.error_taxonomy import error_record
+        stage = str((store.execution_cursor() or {}).get("handler") or "workflow")
+        finished = jobs.finish(job["job_id"], error=error_record(exc, stage=stage))
         store.events.append("job_finished", job_id=job["job_id"], status=finished["status"], error=finished.get("error"))
 
 
@@ -326,14 +343,31 @@ async def create_project(body: CreateProjectRequest) -> dict[str, Any]:
 
 @app.get("/api/projects/{project_id}/delivery", response_model=DesignDeliveryEnvelope)
 async def get_delivery(project_id: str) -> DesignDeliveryEnvelope:
-    """Return only the frozen final image and short note; internal trace stays local."""
+    """Read the latest standalone Delivery without consulting a checkpoint."""
     try:
-        snapshot = _store(project_id).resume() or {}
-        if not snapshot.get("delivery_frozen") or not snapshot.get("final_asset"):
-            raise ValueError("交付尚未最终确认并冻结。")
-        asset = snapshot["final_asset"]
-        return DesignDeliveryEnvelope(final_image={"artifact_id": asset["artifact_id"], "uri": asset["uri"], "sha256": asset["sha256"]},
-                                      design_note=str(snapshot.get("design_note") or "已按确认任务书完成设计并通过最终确认。"))
+        return DesignDeliveryEnvelope.model_validate(DeliveryService(_store(project_id)).get())
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/delivery/generate", response_model=DesignDeliveryEnvelope)
+async def generate_delivery(project_id: str) -> DesignDeliveryEnvelope:
+    """Explicit retry boundary for note and immutable Delivery generation."""
+    try:
+        store = _store(project_id)
+        result = await asyncio.to_thread(DeliveryService(store).generate, store.resume() or {})
+        return DesignDeliveryEnvelope.model_validate(result)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@app.post("/api/projects/{project_id}/delivery/return")
+async def return_delivery(project_id: str, body: ManualReturnRequest) -> dict[str, Any]:
+    """Record a human return; no notification, polling, or webhook is performed."""
+    try:
+        service = DeliveryService(_store(project_id))
+        return await asyncio.to_thread(service.record_return, body.delivery_version,
+            actor=body.actor, target=body.target, idempotency_key=body.idempotency_key)
     except Exception as exc:
         raise _translate_error(exc) from exc
 

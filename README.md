@@ -130,6 +130,8 @@ python3 main.py --projects-root ./projects --debug inspect demo
 
 风格理解与视觉质检分别使用 `StyleUnderstandingOutput`、`VisualInspectionOutput` 严格 Schema。首次 JSON 解析或字段校验失败时，系统把校验错误与脱敏原响应交给同一 VLM 做一次定向修复；第二次仍失败会记录 `structured_output_recovery_required`（`retryable=true`）并停止后续生图/返工。系统不会补造缺失字段、置信度或默认“通过”；恢复时沿用既有 job、任务书哈希和候选槽位幂等语义。
 
+人工圈画微调通过 `POST /api/projects/{project_id}/advance` 的 `guided_edit` 提交。标注只接受 `coordinate_space: "source_image_pixels"`：所有矩形坐标、画笔点和粗细均是原图固有像素，不是 CSS 像素，也不乘设备像素比；前端须按 `source/rendered` 比例反算后提交。请求同时携带当前分支、当前头资产、原图宽高、非空 Prompt、actor 和连续轮次，顶层 `idempotency_key` 必填。服务端合成不可变指导图并保存为受控资产，新产物强制进入重新质检；跨项目、跨分支、非头资产及重复键变更载荷均被拒绝。
+
 兼容说明：旧自定义风格卡必须补齐 `summary`、非空 `tags`、`best_for`、`avoid_for`、`risk_notes` 和受控 `reference_image` 后才能被新版加载器接受；仓库内置目录不需要迁移脚本。
 
 ### `configs/runtime.yaml`
@@ -165,3 +167,14 @@ python3 -m pytest -q
 ```
 
 测试使用 Fake Clients / 离线客户端验证模型调用链，不消耗真实图片生成额度。
+# P1-09 最小 Delivery（服务端）
+
+最终确认冻结后，调用 `POST /api/projects/{project_id}/delivery/generate` 独立生成简短说明和不可变、版本化的 `DesignDeliveryEnvelope 1.1`。说明严格由已确认任务书、最终采用风格/选择理由及最终资产质检事实组成；失败仅记录可重试失败事件，不修改冻结资产或确认事实。
+
+`GET /api/projects/{project_id}/delivery` 只读取独立 Delivery 记录，不依赖 checkpoint，返回稳定资产 URI、真实 SHA-256、格式、尺寸、确认及 trace 引用。`POST /api/projects/{project_id}/delivery/return` 接受 `delivery_version`、`actor`、`target`、`idempotency_key`，只记录显式人工回传事实，不发送通知、轮询或 Webhook。同版本重复回传幂等；资产或说明变化生成新版本，并重新校验任务书、质检和最终确认哈希门禁。
+
+## P1-10 错误与恢复契约（服务端）
+
+作业与失败 checkpoint 使用同一错误对象：`code`、`stage`、可选 `candidate_slot`/`rework_round`、`retryable`、`suggested_action`、`trace_id`、脱敏 `detail`，限流时另含 `retry_after_seconds`。稳定 code 为 `UPSTREAM_TIMEOUT`、`RATE_LIMITED`、`AUTHENTICATION_FAILED`、`CONTENT_REJECTED`、`PROVIDER_UNAVAILABLE`、`ASSET_INGESTION_FAILED`、`STRUCTURED_OUTPUT_INVALID`、`INVALID_INPUT`、`CONFIGURATION_OR_SKILL`、`CANCELLED`、`INTERNAL_ERROR`。前端只需按 `suggested_action` 映射重试、修改输入、联系管理员或人工决策。
+
+HTTP 请求校验仍返回 422；异步执行错误保存在 `AsyncJob.error`，job 状态为 `failed`；协作取消为 `cancel_requested → cancelled`，不伪装失败。所有 `waiting_*` 是成功 checkpoint，既无 error 也无 retry 语义。重试次数、指数退避基数/上限和超时来自项目创建时冻结的 RuntimePolicy；429 尊重 `Retry-After`，401、内容政策及输入错误不会盲重试。候选槽位以既有稳定幂等键记录成功边界，重试或 worker 重启只补尚未成功的槽位。

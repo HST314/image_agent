@@ -38,8 +38,88 @@ python3 -m pytest -q tests
 # 新增适配层测试
 python3 -m pytest -q frontend_tests
 
+# P1-08 圈画微调 UI 契约测试（需要 node；含 Node DOM shim 交互驱动）
+python3 -m pytest -q tests/test_p1_08_guided_edit_ui.py
+
 # Python 语法检查
 python3 -m py_compile main_front.py
+```
+
+## 圈画微调（P1-08 前端）
+
+`waiting_human_rework` 相位渲染圈画编辑器：矩形与自由画笔、颜色、粗细、撤销/清空、
+指导图预览（画布叠加在当前资产图上，与服务端合成同源数据）和自由文本 Prompt。
+
+- **坐标语义**：标注只以 `source_image_pixels` 保存与提交。画布精确覆盖
+  `object-fit: contain` 的实际内容区域，CSS 坐标按 `source/rendered` 比例反算并钳制在
+  原图边界内；DPR 只影响画布 backing store，不进入提交坐标。横图、竖图、超宽图的
+  letterbox 偏移由 `geFitRect` 统一处理。
+- **提交契约**：`POST /api/projects/{project_id}/advance` 携带冻结的 `guided_edit`
+  （当前分支、当前头资产、原图宽高、连续轮次、actor、非空 Prompt）与按载荷派生的稳定
+  `idempotency_key`；重复点击在请求中被禁用，同一载荷重试键不变。项目/分支/头资产/幂等
+  安全门禁由服务端独占执行，前端不复制。
+- **状态**：提交中/失败/成功均有真实状态文案；成功后轮询 job 并重新拉取工程视图，
+  新图进入 `waiting_reinspection`，旧质检与旧最终确认不再可用。
+- **草稿**：未提交标注与 Prompt 按 `ge-draft:{project_id}:{asset_id}` 存入
+  sessionStorage，刷新同资产可恢复，换图不串稿；提交成功即清除。
+- **降级**：当前资产不是受控 artifact（如离线 mock）时不渲染画布，仅保留文字微调；
+  图像载入失败显示可恢复提示。
+
+## 交付与人工回传（P1-09 前端）
+
+最终确认（`completed` / `delivery_frozen`）后，交付区域挂载在监督台完成面板内，
+只消费独立的 `GET /api/projects/{project_id}/delivery` 契约渲染，不从 checkpoint
+拼装 Delivery：稳定资产图（受控 API）、真实 SHA-256、格式/尺寸/字节数、
+“设计理念/选择理由/任务适配点”三段说明、说明来源摘要、任务书确认与最终确认摘要、
+trace 引用，以及待回传/已回传状态。
+
+- **显式动作**：`POST …/delivery/generate` 仅在点击“生成/重新生成说明”时触发；
+  说明生成失败保留最终图与确认事实并允许独立重试。`POST …/delivery/return`
+  提交 `delivery_version/actor/target/idempotency_key`，幂等键按
+  `delivery-return:<载荷哈希>` 派生，同一载荷重试键稳定；回传成功后重新读取
+  Delivery 并展示 actor/时间/目标/版本。
+- **状态与恢复**：未生成/生成中/失败可重试/待回传/已回传均有真实文案；请求中禁用
+  提交按钮并以 `deliveryUi.generating/returning` 守卫，重复点击只发一次请求；
+  409 冲突与网络失败保留表单草稿并显示可恢复错误。资产或说明版本变化产生新
+  Delivery 版本，回传 UI 严格按当前版本 `return_status` 渲染，不沿用旧版本状态。
+- **边界**：哈希、冻结、确认与幂等安全门禁由服务端独占执行，前端不复制；无自动
+  通知、无外部事件流、无后台定时拉取——Delivery 仅在进入工程、显式动作成功后
+  与手动刷新时读取。
+
+```bash
+# P1-09 交付与人工回传 UI 契约测试（需要 node；含 Node DOM shim 交互驱动与跨栈探针）
+python3 -m pytest -q tests/test_p1_09_delivery_ui.py
+```
+
+## 统一错误呈现与恢复（P1-10 前端）
+
+监督台统一消费 AsyncJob 与 checkpoint 两个通道的稳定错误对象（`code/stage/
+candidate_slot/rework_round/retryable/suggested_action/trace_id/detail/
+retry_after_seconds`），旧 `{code,message,retryable}` 错误对象按与服务端
+JobStore 读取迁移一致的语义兼容呈现。
+
+- **建议动作映射**：`retry` 显示重试入口；`modify_input` 提示修改输入（草稿/表单
+  保留）；`contact_admin` 提示联系管理员；`human_decision` 提示人工决策；
+  `none` 不给动作。`RATE_LIMITED` 额外按 `retry_after_seconds` 展示受策略约束的
+  等待提示。全部字段按不可信内容转义渲染。
+- **统一作业消费**：`POST /advance` 的 202 受理一律进入真实轮询（`GET status_url`），
+  进度条只展示服务端心跳的真实 `completed/total/unit`；`failed` 展示错误面板，
+  `cancelled` 中性提示；HTTP 422 等请求级错误立即内联/toast 呈现，不进入作业
+  失败面板。轮询中可显式取消（`POST /jobs/{id}/cancel`），`cancel_requested →
+  cancelled` 全程有真实状态文案。
+- **重试语义**：job 通道的重试复用原动作载荷与原幂等键（同键同载荷由服务端重新
+  排队同一 job）；只有读到服务端 `attempt < max_attempts` 才给重试入口，达到上限
+  展示“已达到重试次数上限”且不再给重试。checkpoint 通道（无作业上下文，含历史
+  失败）保留“从上一成功点重试”（`POST /retry`）人工恢复。前端不重放已成功槽位、
+  不推断重试次数、不复制服务端安全门禁。
+- **断线续接**：进行中的作业以 `job-watch:{project_id}` 存入 sessionStorage；
+  刷新或 worker 重启后重新打开工程会继续轮询或升级呈现终态，呈现与刷新前一致。
+- **人工等待保护**：所有 `waiting_*` 相位仍为正常人工待办，失败面板是独立先行
+  分支，等待相位绝不渲染错误代码或重试语义。
+
+```bash
+# P1-10 统一错误呈现 UI 契约测试（需要 node；含 Node DOM shim 交互驱动与跨栈探针）
+python3 -m pytest -q tests/test_p1_10_error_ui.py
 ```
 
 ## 安全边界
