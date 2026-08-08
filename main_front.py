@@ -562,7 +562,7 @@ async def advance_project(project_id: str, body: AdvanceRequest) -> dict[str, An
         mode = "offline" if body.offline else "real"
         store.assert_runtime_mode(mode)
         options = body.model_dump(mode="json")
-        supplied_key = options.pop("idempotency_key", None)
+        supplied_key = options.get("idempotency_key")
         key = supplied_key or content_hash([store.manifest()["current_checkpoint"], options])
         settings = _settings_store().snapshot()
         jobs = JobStore(store.root, max_attempts=int(settings["policy"]["max_render_retries"]) + 1)
